@@ -1,0 +1,15 @@
+[Unit]
+Description=CarHUD (HUD app, OBD-II, displays and control panel)
+After=network.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/node @DIR@/server/main.js
+Restart=always
+RestartSec=2
+# the HUD should keep up even when the browser windows are busy
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

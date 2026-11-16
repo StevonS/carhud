@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gauges</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: grid; grid-template-rows: auto 1fr; gap: 12px; padding: 14px; }
+  .top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 16px; }
+  .big { font-size: 92px; font-weight: 700; line-height: .9; font-variant-numeric: tabular-nums; }
+  .big small { font-size: 18px; color: var(--dim); font-weight: 500; margin-left: 6px; }
+  .gear { font-size: 110px; font-weight: 800; line-height: .85; color: var(--accent); text-align: center; min-width: 100px; }
+  .right { text-align: right; }
+  .bar { grid-column: 1 / -1; height: 18px; border-radius: 9px; background: var(--panel2); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4cd07d 0%, #f2b632 70%, #ff5a4f 92%); transition: width .12s linear; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; }
+  .g { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .g .l { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .g .v { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .g .v small { font-size: 13px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+  .g.hot { border-color: var(--err); } .g.hot .v { color: var(--err); }
+  #src { position: fixed; right: 14px; bottom: 10px; font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="big" id="speed">--<small>km/h</small></div>
+  <div class="gear" id="gear">-</div>
+  <div class="big right" id="rpm">--<small>rpm</small></div>
+  <div class="bar"><i id="rpmBar"></i></div>
+</div>
+<div class="grid" id="grid"></div>
+<div id="src"></div>
+<script src="/js/carhud.js"></script>
+<script>
+(function () {
+  const { connect, fmt, $, h } = CarHud;
+  // label, unit, decimals, where to read it: hud (what the HUD shows) or obd (the car's raw reading)
+  const G = [
+    ['coolant', 'Coolant', '°C', 0, (v) => v.hud.coolant, (x) => x >= 115],
+    ['oil', 'Oil', '°C', 0, (v) => v.hud.oil, (x) => x >= 130],
+    ['boost', 'Boost', 'bar', 2, (v) => v.hud.boost],
+    ['afr', 'AFR', ':1', 1, (v) => v.derived.afr],
+    ['volts', 'Battery', 'V', 1, (v) => v.obd.volts, (x) => x < 12],
+    ['pedal', 'Throttle', '%', 0, (v) => v.derived.pedal],
+    ['load', 'Load', '%', 0, (v) => v.obd.load],
+    ['iat', 'Intake air', '°C', 0, (v) => v.obd.iat],
+    ['fuelLevel', 'Fuel', '%', 0, (v) => v.obd.fuelLevel, (x) => x < 10],
+    ['burn', 'Fuel rate', 'L/h', 1, (v) => v.derived.burn],
+    ['timing', 'Timing', '°', 1, (v) => v.obd.timing],
+    ['gLong', 'G long', 'g', 2, (v) => v.hud.gLong],
+  ];
+  const grid = $('#grid');
+  G.forEach(([k, label, unit]) => grid.append(h('div', { class: 'g', id: 'g_' + k }, h('div', { class: 'l' }, label), h('div', { class: 'v' }, h('span', { id: 'v_' + k }, '--'), h('small', {}, unit)))));
+  let redline = 7000;
+  connect({}, {
+    message: (m) => {
+      if (m.t === 'settings') redline = m.values.redline || redline;
+      if (m.t !== 'values') return;
+      const v = { hud: m.hud || {}, obd: m.obd || {}, derived: m.derived || {} };
+      $('#speed').firstChild.textContent = fmt(v.hud.speed);
+      $('#rpm').firstChild.textContent = fmt(v.hud.rpm);
+      $('#rpmBar').style.width = Math.min(100, (v.hud.rpm || 0) / (redline + 500) * 100) + '%';
+      const g = Math.round(v.hud.gear);
+      $('#gear').textContent = !isFinite(g) ? '-' : g < 0 ? 'R' : g === 0 ? 'P' : g;
+      G.forEach(([k, , , dec, get, hot]) => {
+        const x = get(v), card = $('#g_' + k);
+        $('#v_' + k).textContent = fmt(x, dec);
+        card.style.display = x === undefined || x === null ? 'none' : '';
+        card.classList.toggle('hot', !!(hot && isFinite(x) && hot(x)));
+      });
+      $('#src').textContent = 'source: ' + m.source;
+    },
+  });
+})();
+</script>
+</body>
+</html>

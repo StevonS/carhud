@@ -1,0 +1,372 @@
+'use strict';
+/**
+ * carhud server: runs the EVA HUD app, streams it to the displays, reads the car over OBD-II,
+ * and serves the control panel (/), the HUD display (/hud) and the second-screen desk (/desk/).
+ *
+ *   node server/main.js            (as the carhud service does)
+ *   CARHUD_CONF=./my.conf node server/main.js
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const { spawn, execFile } = require('child_process');
+
+const config = require('./config');
+const ws = require('./ws');
+const { Renderer, TARGETS } = require('./render');
+const { Streamer } = require('./stream');
+const { Eva } = require('./eva');
+const { Elm327 } = require('./obd/elm327');
+const { Derive } = require('./obd/derive');
+
+const cfg = config.load();
+const ROOT = cfg.ROOT;
+const SOCK = path.join(os.tmpdir(), 'carhud-render-' + process.pid + '.sock');
+
+/* ---------- logging ---------- */
+const logs = [];
+const dataClients = new Set();
+function log(level, text) {
+    const e = { t: 'log', level, time: Date.now(), text };
+    logs.push(e); if (logs.length > 600) logs.shift();
+    (level === 'error' ? console.error : console.log)(new Date().toTimeString().slice(0, 8) + ' ' + level.padEnd(5) + ' ' + text);
+    dataClients.forEach((c) => c.wantsLog && c.send(e));
+}
+function broadcast(obj, filter) { const s = JSON.stringify(obj); dataClients.forEach((c) => (!filter || filter(c)) && c.send(s)); }
+
+/* ---------- version ---------- */
+function gitHead(dir) {
+    try {
+        const head = fs.readFileSync(path.join(dir, '.git', 'HEAD'), 'utf8').trim();
+        if (!head.startsWith('ref: ')) return head.slice(0, 7);
+        const ref = head.slice(5);
+        try { return fs.readFileSync(path.join(dir, '.git', ref), 'utf8').trim().slice(0, 7); } catch (e) { /* packed */ }
+        const packed = fs.readFileSync(path.join(dir, '.git', 'packed-refs'), 'utf8').split('\n').find((l) => l.endsWith(' ' + ref));
+        return packed ? packed.slice(0, 7) : '?';
+    } catch (e) { return 'dev'; }
+}
+let VERSION = '?';
+try { VERSION = fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim(); } catch (e) { /* none */ }
+const BUILD = VERSION + '-' + gitHead(ROOT) + '-' + Date.now().toString(36);    // displays reload when this changes
+
+/* ---------- persistent state ---------- */
+const DATA_DIR = cfg.DATA_DIR;
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const MANUAL_DEFAULTS = { rpm: 900, speed: 0, gear: 0, oil: 95, coolant: 90, boost: 0, gLong: 0, gLat: 0, torque: 0, pedal: 0, knock: 0, fuel: 120, afr: 14.7, burn: 8 };
+let saved = {};
+try { saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (e) { /* first run */ }
+const state = {
+    source: 'demo',
+    auto: cfg.HUD_SOURCE === 'auto' || !['demo', 'manual', 'obd'].includes(cfg.HUD_SOURCE),
+    manual: Object.assign({}, MANUAL_DEFAULTS, saved.manual || {}),
+    drive: saved.drive === undefined ? null : saved.drive,
+};
+if (!state.auto) state.source = cfg.HUD_SOURCE;
+let saveTimer = null;
+function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => fs.writeFile(STATE_FILE, JSON.stringify({ manual: state.manual, drive: state.drive }, null, 1), () => {}), 500);
+}
+
+/* ---------- the HUD app and its renderer ---------- */
+const renderer = new Renderer(SOCK);
+renderer.on('log', log);
+const streamer = new Streamer(renderer);
+const eva = new Eva({ evaDir: cfg.EVA_DIR, dataDir: path.join(DATA_DIR, 'eva'), sockPath: SOCK, watch: cfg.on('EVA_WATCH') });
+eva.on('log', log);
+eva.on('state', () => broadcastState());
+eva.on('settings', (s) => broadcast(Object.assign({ t: 'settings' }, s), (c) => c.wantsData));
+eva.on('status', (s) => broadcast({ t: 'status', s }, (c) => c.wantsData));
+
+/* ---------- OBD-II ---------- */
+const obd = new Elm327(cfg);
+const derive = new Derive(cfg);
+let obdHud = {};
+let lastObdPush = 0;
+obd.on('log', log);
+obd.on('state', (s) => {
+    if (state.auto) {
+        const want = s === 'live' || s === 'waiting' ? 'obd' : 'demo';
+        if (want !== state.source) { log('info', 'source auto: ' + want + ' (adapter ' + s + ')'); setSource(want, true); }
+    }
+    if (s !== 'live') { obdHud = {}; if (state.source === 'obd') applySource(); }
+    broadcastState();
+});
+obd.on('data', (v) => {
+    const now = Date.now();
+    obdHud = derive.hud(v, now);
+    if (state.source === 'obd' && now - lastObdPush >= 50) { lastObdPush = now; applySource(); }
+});
+
+/* ---------- sources ---------- */
+function applySource() {
+    if (state.source === 'demo') eva.setSignals('demo');
+    else if (state.source === 'manual') eva.setSignals('manual', state.manual);
+    else {
+        // the car: what it gives; standing still with the engine off until it answers
+        const v = Object.assign({ rpm: 0, speed: 0, gear: 0 }, obd.state === 'live' ? obdHud : {});
+        eva.setSignals('manual', v);
+    }
+}
+function setSource(src, fromAuto) {
+    if (src === 'auto') { state.auto = true; src = obd.state === 'live' || obd.state === 'waiting' ? 'obd' : 'demo'; }
+    else if (!fromAuto) state.auto = false;
+    if (!['demo', 'manual', 'obd'].includes(src)) return false;
+    state.source = src;
+    applySource();
+    broadcastState();
+    if (!fromAuto) log('info', 'source: ' + src);
+    return true;
+}
+function stateMsg() {
+    return {
+        t: 'state', build: BUILD, version: VERSION, source: state.source, auto: state.auto, app: eva.state, drive: state.drive,
+        manual: state.manual, obd: { state: obd.state, detail: obd.detail }, gearRatios: derive.ratios, gearRatiosSet: derive.ratiosConfigured,
+    };
+}
+function broadcastState() { broadcast(stateMsg()); }
+
+/* values for the panels, 4 times a second */
+setInterval(() => {
+    if (!dataClients.size) return;
+    broadcast({ t: 'values', source: state.source, hud: eva.values, obd: obd.values, derived: obdHud, ratio: derive.ratio }, (c) => c.wantsData);
+}, 250);
+setInterval(() => {
+    if (!dataClients.size) return;
+    broadcast({ t: 'obd', snap: obd.snapshot() }, (c) => c.wantsData);
+    broadcast({ t: 'stats', streams: streamer.stats(), clients: dataClients.size, mem: Math.round(process.memoryUsage().rss / 1048576) }, (c) => c.wantsLog);
+}, 1000);
+
+/* ---------- HTTP ---------- */
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/svg+xml', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
+const MEDIA_EXT = /\.(mp3|m4a|aac|ogg|flac|wav|mp4|webm|mkv)$/i;
+
+function isLocal(req) { const a = req.socket.remoteAddress || ''; return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'; }
+
+/** A file under base, or null (no ../ escapes). */
+function safeJoin(base, rel) {
+    const p = path.normalize(path.join(base, decodeURIComponent(rel)));
+    return p === base || p.startsWith(base + path.sep) ? p : null;
+}
+
+function sendFile(req, res, file, cache) {
+    fs.stat(file, (err, st) => {
+        if (!err && st.isDirectory()) return sendFile(req, res, path.join(file, 'index.html'), cache);
+        if (err || !st.isFile()) { res.writeHead(404); return res.end('not found'); }
+        const type = TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
+        const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+        const headers = { 'content-type': type, 'cache-control': cache ? 'max-age=3600' : 'no-cache', 'accept-ranges': 'bytes' };
+        if (range) {
+            const start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]));
+            const end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1;
+            if (start >= st.size || start > end) { res.writeHead(416, { 'content-range': 'bytes */' + st.size }); return res.end(); }
+            res.writeHead(206, Object.assign(headers, { 'content-range': 'bytes ' + start + '-' + end + '/' + st.size, 'content-length': end - start + 1 }));
+            return fs.createReadStream(file, { start, end }).pipe(res);
+        }
+        res.writeHead(200, Object.assign(headers, { 'content-length': st.size }));
+        fs.createReadStream(file).pipe(res);
+    });
+}
+
+function json(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); }
+function body(req) {
+    return new Promise((resolve) => {
+        let s = '';
+        req.on('data', (d) => { s += d; if (s.length > 1e5) req.destroy(); });
+        req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch (e) { resolve({}); } });
+    });
+}
+
+/* desk apps: the built-in ones, then the user's own folder (kept across updates) */
+function deskApps() {
+    const out = [];
+    const scan = (dir, urlBase, builtin) => {
+        let ids = []; try { ids = fs.readdirSync(dir); } catch (e) { return; }
+        ids.forEach((id) => {
+            let m; try { m = JSON.parse(fs.readFileSync(path.join(dir, id, 'app.json'), 'utf8')); } catch (e) { return; }
+            let url = m.type === 'url' ? String(m.url || '').replace(/\$\{([A-Z_]+)\}/g, (x, k) => cfg[k] || '') : urlBase + id + '/' + (m.entry || 'index.html');
+            if (!url || m.hidden) return;
+            const icon = m.icon && /\.(png|svg|jpg)$/.test(m.icon) ? urlBase + id + '/' + m.icon : (m.icon || '■');
+            out.push({ id, name: m.name || id, icon, url, order: m.order === undefined ? 50 : m.order, builtin, color: m.color || null });
+        });
+    };
+    scan(path.join(ROOT, 'desk', 'apps'), '/desk/apps/', true);
+    scan(cfg.USER_APPS_DIR, '/user-apps/', false);
+    const seen = new Set();
+    return out.reverse().filter((a) => !seen.has(a.id) && seen.add(a.id)).reverse().sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+}
+
+function mediaList() {
+    const base = cfg.MEDIA_DIR, out = [];
+    const walk = (dir, depth) => {
+        if (depth > 4 || out.length > 3000) return;
+        let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        ents.sort((a, b) => a.name.localeCompare(b.name)).forEach((e) => {
+            if (e.name[0] === '.') return;
+            const p = path.join(dir, e.name);
+            if (e.isDirectory()) walk(p, depth + 1);
+            else if (MEDIA_EXT.test(e.name)) out.push(path.relative(base, p));
+        });
+    };
+    walk(base, 0);
+    return { dir: base, files: out };
+}
+
+function systemInfo(cb) {
+    const ifs = os.networkInterfaces(), ips = [];
+    Object.keys(ifs).forEach((n) => ifs[n].forEach((a) => { if (a.family === 'IPv4' && !a.internal) ips.push({ iface: n, ip: a.address }); }));
+    let temp = null; try { temp = Number(fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf8')) / 1000; } catch (e) { /* not a Pi */ }
+    let evaRef = '?'; try { evaRef = gitHead(cfg.EVA_DIR); } catch (e) { /* none */ }
+    const info = {
+        hostname: os.hostname(), ips, port: cfg.port, version: VERSION, commit: gitHead(ROOT), evaCommit: evaRef, node: process.version,
+        uptime: os.uptime(), load: os.loadavg(), memTotal: os.totalmem(), memFree: os.freemem(), temp, throttled: null, config: cfg.file,
+    };
+    execFile('vcgencmd', ['get_throttled'], { timeout: 2000 }, (err, out) => {
+        if (!err) {
+            const v = parseInt(String(out).split('=')[1], 16);
+            if (isFinite(v)) info.throttled = { raw: '0x' + v.toString(16), underVoltageNow: !!(v & 1), throttledNow: !!(v & 4), underVoltageSinceBoot: !!(v & 0x10000), throttledSinceBoot: !!(v & 0x40000) };
+        }
+        cb(info);
+    });
+}
+
+function runDetached(cmd, args, env) {
+    const p = spawn(cmd, args, { detached: true, stdio: 'ignore', env: Object.assign({}, process.env, env || {}) });
+    p.on('error', (e) => log('error', cmd + ': ' + e.message));
+    p.unref();
+}
+
+const UPDATE_LOG = path.join(os.tmpdir(), 'carhud-update.log');
+const routes = {
+    'GET /api/state': (req, res) => json(res, 200, stateMsg()),
+    'GET /api/values': (req, res) => json(res, 200, { source: state.source, hud: eva.values, obd: obd.values, derived: obdHud, ratio: derive.ratio }),
+    'GET /api/obd': (req, res) => json(res, 200, obd.snapshot()),
+    'GET /api/settings': (req, res) => json(res, 200, eva.settings || {}),
+    'GET /api/logs': (req, res) => json(res, 200, logs),
+    'GET /api/desk/apps': (req, res) => json(res, 200, { apps: deskApps(), home: cfg.DESK_HOME }),
+    'GET /api/media': (req, res) => json(res, 200, mediaList()),
+    'GET /api/system': (req, res) => systemInfo((i) => json(res, 200, i)),
+    'GET /api/system/update-log': (req, res) => fs.readFile(UPDATE_LOG, 'utf8', (e, s) => json(res, 200, { log: e ? '' : s })),
+    'POST /api/source': async (req, res) => { const b = await body(req); json(res, setSource(b.source) ? 200 : 400, stateMsg()); },
+    'POST /api/hold': (req, res) => {
+        const v = eva.values || {};
+        Object.keys(MANUAL_DEFAULTS).forEach((k) => { if (typeof v[k] === 'number') state.manual[k] = Math.round(v[k] * 100) / 100; });
+        save(); setSource('manual'); log('info', 'hold: froze the current values in manual');
+        json(res, 200, stateMsg());
+    },
+    'POST /api/manual': async (req, res) => {
+        const b = await body(req);
+        if (b.reset) state.manual = Object.assign({}, MANUAL_DEFAULTS);
+        Object.keys(b.values || {}).forEach((k) => { const n = Number(b.values[k]); if (isFinite(n)) state.manual[k] = n; });
+        save();
+        if (b.switch !== false && state.source !== 'manual') setSource('manual'); else { applySource(); broadcastState(); }
+        json(res, 200, stateMsg());
+    },
+    'POST /api/drive': async (req, res) => {
+        const b = await body(req);
+        state.drive = b.value === null || b.value === undefined || b.value === '' ? null : Number(b.value);
+        eva.setDrive(state.drive); save(); broadcastState();
+        log('info', 'drive mode: ' + (state.drive === null ? 'not sent' : state.drive));
+        json(res, 200, stateMsg());
+    },
+    'POST /api/setting': async (req, res) => {
+        const b = await body(req);
+        if (eva.state !== 'running') return json(res, 409, { error: 'HUD app not running' });
+        eva.setSetting(b.key, b.value); log('info', 'setting ' + b.key + ' = ' + JSON.stringify(b.value));
+        json(res, 200, { ok: true });
+    },
+    'POST /api/app/restart': async (req, res) => { const b = await body(req); json(res, 200, { ok: true }); eva.restart(b.rebuild ? 'rebuild requested' : 'restart requested', !!b.rebuild); },
+    'POST /api/obd/reconnect': (req, res) => { obd.reconnect(); json(res, 200, { ok: true }); },
+    'POST /api/displays/reload': (req, res) => { broadcast({ t: 'reload' }); displays.forEach((d) => d.send({ t: 'reload' })); json(res, 200, { ok: true }); },
+    'POST /api/system/screens': (req, res) => {
+        runDetached('carhud-screens', [], { DISPLAY: ':0', XAUTHORITY: path.join(os.homedir(), '.Xauthority') });
+        json(res, 200, { ok: true });
+    },
+    'POST /api/system/restart': (req, res) => { json(res, 200, { ok: true }); setTimeout(() => runDetached('sudo', ['-n', 'systemctl', 'restart', 'carhud']), 200); },
+    'POST /api/system/reboot': (req, res) => { json(res, 200, { ok: true }); setTimeout(() => runDetached('sudo', ['-n', 'systemctl', 'reboot']), 500); },
+    'POST /api/system/update': (req, res) => {
+        fs.writeFileSync(UPDATE_LOG, 'Starting update...\n');
+        // run outside this service, so restarting the service at the end does not cut the update off
+        runDetached('sudo', ['-n', 'systemd-run', '--collect', '--quiet', '--uid=' + os.userInfo().username, '--setenv=HOME=' + os.homedir(),
+            '/bin/sh', '-c', 'exec /usr/local/bin/carhud update > ' + UPDATE_LOG + ' 2>&1']);
+        json(res, 200, { ok: true, log: UPDATE_LOG });
+    },
+};
+const SYSTEM_ACTIONS = /^POST \/api\/system\//;
+
+const displays = new Set();
+const server = http.createServer(async (req, res) => {
+    if (!cfg.on('ALLOW_LAN') && !isLocal(req)) { res.writeHead(403); return res.end('LAN access is off (ALLOW_LAN=0)'); }
+    const url = req.url.split('?')[0];
+    const key = req.method + ' ' + url;
+    try {
+        if (routes[key]) {
+            if (SYSTEM_ACTIONS.test(key) && !isLocal(req) && !cfg.on('ALLOW_LAN_SYSTEM') && !['POST /api/system/screens'].includes(key)) {
+                return json(res, 403, { error: 'system actions are only allowed on the Pi itself (set ALLOW_LAN_SYSTEM=1 to allow)' });
+            }
+            return await routes[key](req, res);
+        }
+        if (req.method !== 'GET') { res.writeHead(404); return res.end(); }
+        if (url === '/favicon.ico') { res.writeHead(301, { location: '/favicon.svg' }); return res.end(); }
+        if (url === '/') return sendFile(req, res, path.join(ROOT, 'web', 'index.html'));
+        if (url === '/hud') return sendFile(req, res, path.join(ROOT, 'web', 'hud.html'));
+        if (url === '/desk' ) { res.writeHead(302, { location: '/desk/' }); return res.end(); }
+        if (url === '/desk/') return sendFile(req, res, path.join(ROOT, 'desk', 'index.html'));
+        const pick = (prefix, base) => url.startsWith(prefix) && safeJoin(base, url.slice(prefix.length));
+        let f;
+        if ((f = pick('/desk/', path.join(ROOT, 'desk')))) return sendFile(req, res, f);
+        if ((f = pick('/user-apps/', cfg.USER_APPS_DIR))) return sendFile(req, res, f);
+        if ((f = pick('/media/', cfg.MEDIA_DIR))) return sendFile(req, res, f, true);
+        if ((f = pick('/', path.join(ROOT, 'web')))) return sendFile(req, res, f);
+        res.writeHead(404); res.end('not found');
+    } catch (e) {
+        log('error', 'http ' + key + ': ' + e.message);
+        if (!res.headersSent) json(res, 500, { error: e.message });
+    }
+});
+
+ws.attach(server, (u) => u.split('?')[0] === '/ws', (c, req) => {
+    if (!cfg.on('ALLOW_LAN') && !isLocal(req)) return c.close();
+    const q = new URL(req.url, 'http://x').searchParams;
+    c.addr = req.socket.remoteAddress;
+    c.role = q.get('role') || (q.get('target') ? 'display' : 'panel');
+    c.wantsData = q.get('data') !== '0';
+    c.wantsLog = q.get('log') === '1';
+    c.send({ t: 'hello', build: BUILD, version: VERSION, targets: TARGETS });
+    c.send(stateMsg());
+    c.on('message', (m) => { if (m && m.t === 'ping') c.send({ t: 'pong', id: m.id, server: Date.now() }); });
+    dataClients.add(c);
+    c.on('close', () => { dataClients.delete(c); displays.delete(c); });
+    if (c.wantsData) {
+        if (eva.settings) c.send(Object.assign({ t: 'settings' }, eva.settings));
+        if (eva.status) c.send({ t: 'status', s: eva.status });
+        c.send({ t: 'obd', snap: obd.snapshot() });
+    }
+    if (c.wantsLog) logs.forEach((e) => c.send(e));
+    const target = q.get('target');
+    if (target && (TARGETS[target] || target === 'all')) { displays.add(c); streamer.add(c, target, Number(q.get('fps')) || 0); }
+});
+
+/* ---------- start ---------- */
+renderer.listen(() => {
+    server.listen(cfg.port, cfg.on('ALLOW_LAN') ? '0.0.0.0' : '127.0.0.1', () => {
+        log('info', 'carhud ' + VERSION + ' on port ' + cfg.port + (cfg.on('ALLOW_LAN') ? ' (LAN on)' : ' (this Pi only)') + ', config ' + cfg.file);
+        applySource();
+        if (state.drive !== null) eva.setDrive(state.drive);
+        eva.start();
+        if (cfg.on('OBD_ENABLE')) obd.start(); else log('info', 'OBD off (OBD_ENABLE=0)');
+    });
+});
+server.on('error', (e) => { log('error', 'http server: ' + e.message); process.exit(1); });
+
+async function shutdown() {
+    log('info', 'stopping');
+    obd.stop();
+    await eva.stop();
+    renderer.close();
+    process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

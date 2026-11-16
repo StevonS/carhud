@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HUD</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 12px; padding: 12px; }
+  .view { background: #000; border-radius: 10px; display: grid; place-items: center; overflow: hidden; }
+  .view canvas { max-width: 100%; max-height: 100%; }
+  .side { display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+  .side h3 { margin: 6px 0 2px; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+  .side .seg button { flex: 1 1 45%; padding: 10px 6px; font-size: 15px; }
+  #status { font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="view"><canvas id="c" width="800" height="480"></canvas></div>
+<div class="side">
+  <h3>Source</h3>
+  <div class="seg" id="src"></div>
+  <button id="hold">Hold what's on the HUD</button>
+  <h3>Drive mode</h3>
+  <div class="seg" id="drive"></div>
+  <h3>Screens</h3>
+  <div class="seg"><button id="reload">Reload screens</button><button id="restart">Restart HUD app</button></div>
+  <div id="status"></div>
+</div>
+<script src="/js/carhud.js"></script>
+<script src="/js/hudview.js"></script>
+<script>
+(function () {
+  const { api, connect, $, h, DRIVE } = CarHud;
+  const view = new HudView($('#c'), { target: 'hud' });
+  connect({ target: 'hud', data: false, fps: 20 }, { message: (m) => view.message(m), binary: (b) => view.binary(b) });
+  ['auto', 'demo', 'manual', 'obd'].forEach((s) => $('#src').append(h('button', { 'data-s': s, onclick: () => api('/api/source', { source: s }) }, CarHud.SOURCE_NAMES[s])));
+  DRIVE.forEach(([v, n]) => $('#drive').append(h('button', { 'data-v': String(v), onclick: () => api('/api/drive', { value: v }) }, n)));
+  $('#hold').onclick = () => api('/api/hold', {});
+  $('#reload').onclick = () => api('/api/displays/reload', {});
+  $('#restart').onclick = () => api('/api/app/restart', {});
+  connect({}, {
+    message: (m) => {
+      if (m.t === 'state') {
+        document.querySelectorAll('#src button').forEach((b) => b.classList.toggle('on', m.auto ? b.dataset.s === 'auto' : b.dataset.s === m.source));
+        document.querySelectorAll('#drive button').forEach((b) => b.classList.toggle('on', String(m.drive) === b.dataset.v));
+      }
+      if (m.t === 'status') $('#status').textContent = m.s;
+    },
+  });
+})();
+</script>
+</body>
+</html>

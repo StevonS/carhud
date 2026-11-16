@@ -1,0 +1,8 @@
+{
+  "name": "CarPlay",
+  "icon": "▶",
+  "order": 50,
+  "type": "url",
+  "url": "${CARPLAY_URL}",
+  "comment": "Shown only when CARPLAY_URL is set in /etc/carhud.conf"
+}

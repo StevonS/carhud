@@ -1,0 +1,35 @@
+#!/bin/bash
+# carhud-update (also: carhud update): get the newest CarHUD from GitHub and apply it.
+#   carhud update            update to the newest version of the branch this Pi follows
+#   carhud update --check    only say whether there is an update
+#   carhud update --force    re-apply even when already up to date
+# Only what changed is redone: system packages and the HUD fonts are skipped when nothing about them changed.
+set -euo pipefail
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+cd "$DIR"
+GIT="git -c safe.directory=$DIR"
+
+[ -d .git ] || { echo "$DIR is not a git checkout; reinstall with the README's install steps"; exit 1; }
+BRANCH=$($GIT rev-parse --abbrev-ref HEAD)
+echo "CarHUD in $DIR, branch $BRANCH, now at $($GIT rev-parse --short HEAD) ($(cat VERSION 2>/dev/null))"
+echo "Checking GitHub..."
+$GIT fetch --quiet origin "$BRANCH"
+LOCAL=$($GIT rev-parse HEAD); REMOTE=$($GIT rev-parse "origin/$BRANCH")
+
+if [ "${1:-}" = "--check" ]; then
+    if [ "$LOCAL" = "$REMOTE" ]; then echo "Up to date."; else echo "Update available:"; $GIT log --oneline "$LOCAL..$REMOTE"; fi
+    exit 0
+fi
+if [ "$LOCAL" = "$REMOTE" ] && [ "${1:-}" != "--force" ]; then echo "Already up to date."; exit 0; fi
+
+if [ -n "$($GIT status --porcelain --untracked-files=no)" ]; then
+    echo "You changed files in $DIR; keeping a copy of your changes with git stash."
+    $GIT stash push --quiet -m "carhud-update $(date +%F_%T)"
+fi
+if [ "$LOCAL" != "$REMOTE" ]; then
+    echo "Changes:"; $GIT log --oneline "$LOCAL..$REMOTE" | sed 's/^/  /'
+    $GIT merge --ff-only --quiet "origin/$BRANCH"
+fi
+echo "Now at $($GIT rev-parse --short HEAD) ($(cat VERSION))"
+echo "Applying..."
+exec sudo bash "$DIR/install.sh" --update

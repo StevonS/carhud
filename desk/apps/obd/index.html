@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBD</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  td.dead { color: #555c66; text-decoration: line-through; }
+  .state { font-size: 20px; font-weight: 600; }
+</style>
+</head>
+<body>
+<section class="card">
+  <div class="row"><span class="state" id="state">--</span><span class="grow"></span><button id="re">Reconnect</button></div>
+  <div class="muted" id="detail" style="margin:4px 0 10px"></div>
+  <div class="kv" id="info"></div>
+</section>
+<section class="card">
+  <table><thead><tr><th>PID</th><th>reading</th><th class="num">value</th><th class="num">updates/s</th></tr></thead><tbody id="pids"></tbody></table>
+</section>
+<script src="/js/carhud.js"></script>
+<script>
+(function () {
+  const { api, connect, $, h } = CarHud;
+  const NAMES = { live: 'Connected', waiting: 'Car not answering', searching: 'No adapter', connecting: 'Connecting', off: 'Off' };
+  $('#re').onclick = () => api('/api/obd/reconnect', {});
+  let ratio = null, gear = null;
+  connect({}, {
+    message: (m) => {
+      if (m.t === 'values') { ratio = m.ratio; gear = (m.derived || {}).gear; }
+      if (m.t !== 'obd') return;
+      const s = m.snap, i = s.info || {};
+      $('#state').textContent = NAMES[s.state] || s.state;
+      $('#state').style.color = s.state === 'live' ? 'var(--ok)' : s.state === 'waiting' ? 'var(--warn)' : 'var(--dim)';
+      $('#detail').textContent = s.detail;
+      const box = $('#info'); box.innerHTML = '';
+      [['Device', i.device], ['Adapter', i.version], ['Baud', i.baud], ['Protocol', i.protocol], ['Battery', i.volts && i.volts + ' V'],
+       ['Poll rate', s.roundHz && s.roundHz + ' rounds/s' + (s.multi ? ', multi-PID' : '')], ['rpm per km/h', ratio === null ? null : ratio + (gear ? ' (gear ' + gear + ')' : '')]]
+        .forEach(([k, v]) => box.append(h('span', {}, k), h('span', {}, v || '--')));
+      const tb = $('#pids'); tb.innerHTML = '';
+      s.pids.forEach((p) => tb.append(h('tr', {}, h('td', { class: 'mono' + (p.dead ? ' dead' : '') }, p.pid), h('td', { class: p.dead ? 'dead' : '' }, p.label),
+        h('td', { class: 'num' }, p.value === undefined ? '--' : CarHud.num(p.value) + ' ' + p.unit), h('td', { class: 'num' }, p.hz === null ? '' : p.hz))));
+      if (!s.pids.length) tb.append(h('tr', {}, h('td', { colspan: 4, class: 'muted' }, 'Plug the USB OBD-II cable into the Pi and the car, ignition on.')));
+    },
+  });
+})();
+</script>
+</body>
+</html>

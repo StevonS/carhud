@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>CarHUD desk</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  html, body { height: 100%; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  body { display: flex; flex-direction: column; }
+  #bar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: #0f1013; border-bottom: 1px solid var(--line); }
+  #home { width: 40px; height: 36px; padding: 0; font-size: 20px; display: grid; place-items: center; }
+  #title { font-weight: 600; letter-spacing: .04em; }
+  #clock { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
+  #stage { flex: 1; position: relative; }
+  #launcher { position: absolute; inset: 0; overflow: auto; padding: 22px; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; align-content: start; }
+  .tile { height: 120px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; cursor: pointer; transition: transform .08s; }
+  .tile:active { transform: scale(.96); border-color: var(--accent); }
+  .tile .icon { font-size: 40px; line-height: 1; height: 44px; display: grid; place-items: center; }
+  .tile .icon img { width: 44px; height: 44px; object-fit: contain; }
+  .tile .name { font-size: 14px; }
+  iframe.app { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); display: none; }
+  iframe.app.show { display: block; }
+  #toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; display: none; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="home" title="Home">⌂</button>
+  <span id="title">Home</span>
+  <span class="grow"></span>
+  <span id="pObd" class="pill">OBD</span>
+  <span id="pSrc" class="pill accent">HUD</span>
+  <span id="clock">--:--</span>
+</div>
+<div id="stage">
+  <div id="launcher"></div>
+  <div id="toast"></div>
+</div>
+<script src="/js/carhud.js"></script>
+<script>
+/* The desk: a small launcher for the second screen. Apps are web pages in folders
+ * (desk/apps/<id>/ built in, ~/carhud-apps/<id>/ your own), opened full-screen under the bar.
+ * Opened apps stay alive in the background, so music keeps playing when you go home. */
+(function () {
+  const { api, connect, $, h } = CarHud;
+  const frames = new Map();
+  let apps = [];
+
+  function showHome() {
+    frames.forEach((f) => f.classList.remove('show'));
+    $('#launcher').style.display = '';
+    $('#title').textContent = 'Home';
+  }
+  function open(app) {
+    let f = frames.get(app.id);
+    if (!f) {
+      f = h('iframe', { class: 'app', src: app.url, allow: 'autoplay; fullscreen' });
+      frames.set(app.id, f);
+      $('#stage').append(f);
+    }
+    frames.forEach((x) => x.classList.toggle('show', x === f));
+    $('#launcher').style.display = 'none';
+    $('#title').textContent = app.name;
+  }
+  $('#home').onclick = showHome;
+  window.addEventListener('message', (e) => { if (e.data && e.data.carhud === 'home') showHome(); if (e.data && e.data.carhud === 'open') { const a = apps.find((x) => x.id === e.data.id); if (a) open(a); } });
+
+  function tile(app) {
+    const icon = /^\//.test(app.icon) ? h('img', { src: app.icon, alt: '' }) : app.icon;
+    const t = h('div', { class: 'tile', onclick: () => open(app) }, h('div', { class: 'icon' }, icon), h('div', { class: 'name' }, app.name));
+    if (app.color) t.style.borderColor = app.color;
+    return t;
+  }
+  api('/api/desk/apps').then((r) => {
+    apps = r.apps || [];
+    const box = $('#launcher');
+    apps.forEach((a) => box.append(tile(a)));
+    const home = apps.find((a) => a.id === r.home);
+    if (home) open(home);
+  });
+
+  const tick = () => { const d = new Date(); $('#clock').textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  tick(); setInterval(tick, 5000);
+
+  connect({ data: false }, {
+    message: (m) => {
+      if (m.t !== 'state') return;
+      const o = m.obd || {};
+      const p = $('#pObd');
+      p.className = 'pill ' + (o.state === 'live' ? 'ok' : o.state === 'waiting' ? 'warn' : '');
+      p.textContent = o.state === 'live' ? 'OBD live' : o.state === 'waiting' ? 'OBD: car off' : 'no OBD';
+      $('#pSrc').textContent = 'HUD ' + m.source;
+    },
+  });
+})();
+</script>
+</body>
+</html>

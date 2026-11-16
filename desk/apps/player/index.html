@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Music</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }
+  .now { padding: 16px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+  .title { font-size: 22px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctl { display: flex; gap: 10px; align-items: center; }
+  .ctl button { font-size: 22px; width: 64px; height: 52px; padding: 0; }
+  .ctl button#play { width: 84px; background: var(--accent); color: #111; border-color: var(--accent); }
+  .ctl button.on { color: var(--accent); border-color: var(--accent); }
+  .time { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; min-width: 90px; }
+  #list { overflow: auto; padding: 6px 0; }
+  .item { padding: 11px 18px; border-bottom: 1px solid #1a1d22; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .dir { color: var(--dim); font-size: 12px; }
+  .item.on { color: var(--accent); background: rgba(255,138,42,.07); }
+  video { max-height: 40vh; width: 100%; background: #000; border-radius: 8px; display: none; }
+  .empty { padding: 30px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="now">
+  <div class="title" id="title">Nothing playing</div>
+  <video id="media" playsinline></video>
+  <div class="ctl">
+    <button id="prev">⏮</button><button id="play">▶</button><button id="next">⏭</button><button id="shuf" title="Shuffle">⤮</button>
+    <span class="time" id="time"></span>
+    <input type="range" id="seek" min="0" max="1000" value="0" class="grow">
+  </div>
+</div>
+<div id="list"></div>
+<script src="/js/carhud.js"></script>
+<script>
+/* Plays music and videos from MEDIA_DIR (default ~/Music). A starting point for your own player. */
+(function () {
+  const { api, $, h } = CarHud;
+  const media = $('#media');
+  let files = [], order = [], pos = -1, shuffle = false;
+  const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
+  const nameOf = (p) => p.split('/').pop().replace(/\.[^.]+$/, '');
+  const mm = (s) => isFinite(s) ? Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0') : '-:--';
+
+  function play(i) {
+    if (!files.length) return;
+    pos = (i + order.length) % order.length;
+    const f = files[order[pos]];
+    media.style.display = /\.(mp4|webm|mkv)$/i.test(f) ? 'block' : 'none';
+    media.src = '/media/' + enc(f);
+    media.play().catch(() => {});
+    $('#title').textContent = nameOf(f);
+    document.querySelectorAll('.item').forEach((e, k) => e.classList.toggle('on', k === order[pos]));
+  }
+  $('#play').onclick = () => { if (pos < 0) return play(0); media.paused ? media.play() : media.pause(); };
+  $('#next').onclick = () => play(pos + 1);
+  $('#prev').onclick = () => (media.currentTime > 3 ? (media.currentTime = 0) : play(pos - 1));
+  $('#shuf').onclick = () => {
+    shuffle = !shuffle; $('#shuf').classList.toggle('on', shuffle);
+    const cur = order[pos];
+    order = files.map((x, i) => i);
+    if (shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    pos = Math.max(0, order.indexOf(cur));
+  };
+  media.onended = () => play(pos + 1);
+  media.onplay = () => { $('#play').textContent = '⏸'; };
+  media.onpause = () => { $('#play').textContent = '▶'; };
+  media.ontimeupdate = () => {
+    $('#time').textContent = mm(media.currentTime) + ' / ' + mm(media.duration);
+    if (!seeking && media.duration) $('#seek').value = media.currentTime / media.duration * 1000;
+  };
+  let seeking = false;
+  $('#seek').oninput = () => { seeking = true; };
+  $('#seek').onchange = () => { if (media.duration) media.currentTime = $('#seek').value / 1000 * media.duration; seeking = false; };
+
+  api('/api/media').then((r) => {
+    files = r.files || []; order = files.map((x, i) => i);
+    const list = $('#list');
+    if (!files.length) { list.append(h('div', { class: 'empty' }, 'No music found in ' + r.dir + '. Copy files there (mp3, m4a, flac, ogg, wav, mp4...).')); return; }
+    files.forEach((f, i) => {
+      const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '';
+      list.append(h('div', { class: 'item', onclick: () => play(order.indexOf(i)) }, nameOf(f), dir ? h('div', { class: 'dir' }, dir) : ''));
+    });
+  });
+})();
+</script>
+</body>
+</html>

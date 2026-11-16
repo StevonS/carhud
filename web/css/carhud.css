@@ -1,0 +1,37 @@
+/* carhud.css: shared look for the control panel and the desk */
+:root {
+  --bg: #0a0b0d; --panel: #14161a; --panel2: #1b1e23; --line: #2a2e35; --text: #e4e6ea; --dim: #8b919b;
+  --accent: #ff8a2a; --accent2: #ffb36b; --ok: #4cd07d; --warn: #f2b632; --err: #ff5a4f; --blue: #4fa3ff;
+  --radius: 10px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, select, input { font: inherit; color: var(--text); }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:active { transform: translateY(1px); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+button.danger:hover { border-color: var(--err); color: var(--err); }
+select, input[type=number], input[type=text] { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+input[type=checkbox] { accent-color: var(--accent); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel2); color: var(--dim); font-size: 12px; white-space: nowrap; }
+.pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.ok { color: var(--ok); background: rgba(76,208,125,.12); }
+.pill.warn { color: var(--warn); background: rgba(242,182,50,.12); }
+.pill.bad { color: var(--err); background: rgba(255,90,79,.12); }
+.pill.accent { color: var(--accent); background: rgba(255,138,42,.12); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.card > h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+.card > h2 .grow { flex: 1; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button.on { border-color: var(--accent); color: var(--accent); background: rgba(255,138,42,.1); }
+.note { color: var(--dim); font-size: 12px; margin-top: 8px; }
+.muted { color: var(--dim); }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+th { color: var(--dim); font-weight: 500; font-size: 12px; }
+td.num { text-align: right; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.grow { flex: 1; }

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CarHUD control</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; letter-spacing: .04em; }
+  header h1 b { color: var(--accent); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; padding: 14px; }
+  @media (max-width: 1050px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .stage { background: #000; border-radius: 8px; overflow: hidden; position: relative; }
+  .stage canvas { display: block; width: 100%; height: auto; }
+  .stage.native canvas { width: auto; max-width: none; }
+  .stage.mirror canvas { transform: scaleX(-1); }
+  .stage .age { position: absolute; right: 8px; bottom: 6px; font: 11px monospace; color: #7fdc9a; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 4px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 10px; font-size: 13px; }
+  .toolbar label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; color: var(--dim); }
+  .sig { display: grid; grid-template-columns: 74px 1fr 66px 54px; gap: 8px; align-items: center; margin: 5px 0; font-size: 13px; }
+  .sig input[type=number] { width: 66px; padding: 2px 4px; }
+  .sig .live { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .sig .unit { color: var(--dim); font-size: 11px; }
+  .sig.off input { opacity: .55; }
+  .gears button { min-width: 38px; padding: 4px 8px; }
+  .presets button { font-size: 12px; padding: 4px 9px; }
+  .srow { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 5px 0; font-size: 13px; }
+  .srow select { max-width: 190px; }
+  #log { height: 300px; overflow: auto; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; background: var(--bg); border-radius: 6px; padding: 8px; }
+  #log .warn { color: var(--warn); } #log .error { color: var(--err); } #log .t { color: #555c66; }
+  #srcNote { min-height: 34px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  #obdTable td.dead { color: #555c66; text-decoration: line-through; }
+  .status { font-size: 13px; padding: 7px 10px; border-radius: 6px; background: var(--panel2); margin-bottom: 8px; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>CAR</b>HUD</h1>
+  <span id="pApp" class="pill">app</span>
+  <span id="pSrc" class="pill accent">source</span>
+  <span id="pObd" class="pill">obd</span>
+  <span id="pLink" class="pill">link</span>
+  <span class="grow"></span>
+  <span class="muted" id="ver"></span>
+  <button id="bReload" title="Reload every HUD and desk screen">Reload screens</button>
+  <button id="bRestart" title="Restart the HUD app">Restart app</button>
+  <button id="bRebuild" title="Rebuild the HUD app from its source, then restart it">Rebuild</button>
+</header>
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Live view <span class="grow"></span><span id="stat" class="mono muted" style="text-transform:none;letter-spacing:0"></span></h2>
+      <div class="stage" id="stage"><canvas id="c" width="800" height="480"></canvas><span class="age" id="age"></span></div>
+      <div class="toolbar">
+        <select id="target"><option value="hud">HUD 800×480</option><option value="panel">Dash 1920×720</option><option value="map">Map 1088×480</option></select>
+        <label><input type="checkbox" id="oOutlines"> layer outlines</label>
+        <label><input type="checkbox" id="oBackdrop"> road backdrop</label>
+        <label><input type="checkbox" id="oBmw"> BMW speed zone</label>
+        <label><input type="checkbox" id="oMirror"> mirrored</label>
+        <label><input type="checkbox" id="oNative"> 1:1</label>
+        <select id="fps" title="Limit this preview's frame rate (saves Wi-Fi)"><option value="0">full rate</option><option value="30">30 fps</option><option value="15">15 fps</option><option value="5">5 fps</option></select>
+        <button id="bShot">Screenshot</button>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Log <span class="grow"></span>
+        <select id="logLevel" style="text-transform:none"><option value="info">everything</option><option value="warn">warnings + errors</option><option value="error">errors</option></select>
+        <input type="text" id="logFilter" placeholder="filter" style="width:130px;text-transform:none">
+        <button id="logPause">Pause</button><button id="logClear">Clear</button>
+      </h2>
+      <div id="log"></div>
+    </section>
+    <section class="card">
+      <h2>Streams</h2>
+      <table><thead><tr><th>screen</th><th>address</th><th>target</th><th class="num">updates</th><th class="num">sent</th><th class="num">skipped</th><th class="num">queued</th></tr></thead><tbody id="streams"></tbody></table>
+      <div class="note">A screen that can't keep up is skipped and then sent the newest picture, so it never falls behind. "skipped" counts those catch-ups.</div>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card">
+      <h2>Source</h2>
+      <div class="seg" id="srcSeg">
+        <button data-s="auto">Auto</button><button data-s="demo">Demo</button><button data-s="manual">Manual</button><button data-s="obd">OBD</button>
+        <span class="grow"></span><button id="bHold" title="Freeze exactly what the HUD shows now, in Manual">Hold</button>
+      </div>
+      <div class="note" id="srcNote"></div>
+      <div class="status" id="appStatus" style="margin-top:8px">waiting for the app</div>
+    </section>
+    <section class="card">
+      <h2>Drive mode</h2>
+      <div class="seg" id="driveSeg"></div>
+      <div class="note">The car's drive mode buttons. Each mode has its own HUD design (settings below).</div>
+    </section>
+    <section class="card">
+      <h2>Signals <span class="grow"></span><button id="bReset" style="text-transform:none">Reset</button></h2>
+      <div class="seg gears" id="gears"></div>
+      <div id="sigs" style="margin-top:8px"></div>
+      <div class="seg presets" id="presets" style="margin-top:8px"></div>
+      <div class="note">Moving any control switches to Manual, where the HUD holds exactly these values. Gear P/N shows the parked screens; a gear shows the driving ones.</div>
+    </section>
+    <section class="card">
+      <h2>HUD settings</h2>
+      <div id="settings" class="muted">waiting for the app</div>
+    </section>
+    <section class="card">
+      <h2>OBD-II <span class="grow"></span><button id="bObdRe" style="text-transform:none">Reconnect</button></h2>
+      <div class="kv" id="obdInfo"></div>
+      <div class="kv" id="obdGear" style="margin-top:8px"></div>
+      <details><summary>PIDs</summary>
+        <table id="obdTable" style="margin-top:6px"><thead><tr><th>PID</th><th>reading</th><th class="num">value</th><th class="num">Hz</th></tr></thead><tbody></tbody></table>
+      </details>
+    </section>
+  </div>
+</main>
+<script src="/js/carhud.js"></script>
+<script src="/js/hudview.js"></script>
+<script src="/js/control.js"></script>
+</body>
+</html>

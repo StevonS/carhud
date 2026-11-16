@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>System</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 5px 12px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  .actions button { padding: 14px 10px; font-size: 15px; }
+  pre { background: var(--bg); padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 0; display: none; }
+  .warnbox { color: var(--warn); }
+</style>
+</head>
+<body>
+<section class="card"><h2>This Pi</h2><div class="kv" id="info"></div></section>
+<section class="card">
+  <h2>Actions</h2>
+  <div class="actions">
+    <button id="update" class="primary">Update CarHUD</button>
+    <button id="screens">Reload screens</button>
+    <button id="restart">Restart CarHUD service</button>
+    <button id="reboot" class="danger">Reboot</button>
+  </div>
+  <pre id="log"></pre>
+</section>
+<script src="/js/carhud.js"></script>
+<script>
+(function () {
+  const { api, $, h } = CarHud;
+  const dur = (s) => { const d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return (d ? d + 'd ' : '') + hh + 'h ' + m + 'm'; };
+  function load() {
+    api('/api/system').then((i) => {
+      const t = i.throttled;
+      const power = !t ? null : t.underVoltageNow ? '⚠ under-voltage NOW: use a better power supply' : t.underVoltageSinceBoot ? '⚠ under-voltage happened since boot' : t.throttledNow ? '⚠ throttled (too hot?)' : 'OK';
+      const rows = [
+        ['Address', i.ips.map((x) => x.ip).join(', ') || 'no network'], ['Control panel', i.ips.map((x) => 'http://' + x.ip + ':' + i.port).join('  ') || '--'],
+        ['Hostname', i.hostname], ['CarHUD', i.version + ' (' + i.commit + ')'], ['HUD project', i.evaCommit], ['Node', i.node],
+        ['CPU temp', i.temp === null ? '--' : i.temp.toFixed(1) + ' °C'], ['Power', power || '--'], ['Load', i.load.map((x) => x.toFixed(2)).join('  ')],
+        ['Memory', Math.round((i.memTotal - i.memFree) / 1048576) + ' / ' + Math.round(i.memTotal / 1048576) + ' MB'], ['Uptime', dur(i.uptime)], ['Config', i.config],
+      ];
+      const box = $('#info'); box.innerHTML = '';
+      rows.forEach(([k, v]) => box.append(h('span', {}, k), h('span', { class: /⚠/.test(v) ? 'warnbox' : '' }, v)));
+    });
+  }
+  load(); setInterval(load, 5000);
+  const say = (t) => { $('#log').style.display = 'block'; $('#log').textContent = t; };
+  const act = (path, msg, confirmText) => () => {
+    if (confirmText && !confirm(confirmText)) return;
+    api(path, {}).then((r) => say(r.error ? 'Not allowed: ' + r.error : msg));
+  };
+  $('#screens').onclick = act('/api/system/screens', 'Reopening the screens...');
+  $('#restart').onclick = act('/api/system/restart', 'Restarting the CarHUD service; the screens reconnect by themselves.');
+  $('#reboot').onclick = act('/api/system/reboot', 'Rebooting...', 'Reboot the Pi?');
+  let poll = null;
+  $('#update').onclick = () => api('/api/system/update', {}).then((r) => {
+    if (r.error) return say('Not allowed: ' + r.error);
+    clearInterval(poll);
+    poll = setInterval(() => api('/api/system/update-log').then((l) => { say(l.log || 'Starting update...'); $('#log').scrollTop = 1e9; }), 1000);
+  });
+})();
+</script>
+</body>
+</html>

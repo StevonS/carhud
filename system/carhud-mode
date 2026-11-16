@@ -1,0 +1,12 @@
+#!/bin/bash
+# carhud-mode: what happens when the desktop starts.
+#   carhud-mode kiosk     open the HUD and desk screens full-screen at login
+#   carhud-mode desktop   just the desktop; open the screens yourself with carhud-screens
+#   carhud-mode           show the current mode
+CONF=/etc/carhud.conf
+case "${1:-}" in
+    kiosk)   sudo sed -i 's/^AUTOSTART=.*/AUTOSTART=1/' "$CONF"; echo "kiosk: the screens open at login (reboot, or run carhud-screens)";;
+    desktop) sudo sed -i 's/^AUTOSTART=.*/AUTOSTART=0/' "$CONF"; echo "desktop: the screens stay closed at login (carhud-screens --stop closes them now)";;
+    "")      if grep -q '^AUTOSTART=1' "$CONF"; then echo kiosk; else echo desktop; fi;;
+    *)       echo "usage: carhud-mode [kiosk|desktop]"; exit 1;;
+esac
