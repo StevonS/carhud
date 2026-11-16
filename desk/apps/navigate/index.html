@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Navigate</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .turn { display: flex; flex-direction: column; gap: 10px; }
+  .main { display: grid; grid-template-columns: 130px 1fr; gap: 14px; align-items: center; }
+  .dist { font-size: 56px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; }
+  .text { font-size: 19px; margin-top: 6px; }
+  .then { color: var(--dim); display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .trip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: auto; }
+  .trip > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .trip .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; } .trip .v { font-size: 22px; font-weight: 650; }
+  .map { background: #07080a; border: 1px solid var(--line); border-radius: 12px; position: relative; overflow: hidden; }
+  .map canvas { width: 100%; height: 100%; display: block; }
+  .idle { grid-column: 1 / -1; display: grid; place-items: center; text-align: center; color: var(--dim); }
+  .idle b { color: var(--text); font-size: 20px; display: block; margin-bottom: 8px; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .btns { display: flex; gap: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="idle hidden" id="idle"><div><b>No route</b>Pick a destination in the CarHUD app on your phone.<br>Its route and turns show here and on the HUD.</div></div>
+<div class="turn" id="turnBox">
+  <div class="main"><canvas id="arrow" width="260" height="260" style="width:130px;height:130px"></canvas>
+    <div><div class="dist" id="dist">--</div><div class="text" id="text"></div><div class="warn hidden" id="off">Off the route: rerouting on the phone...</div></div></div>
+  <div class="then" id="then"></div>
+  <div class="trip"><div><div class="l">Left</div><div class="v" id="left">--</div></div><div><div class="l">Arrive</div><div class="v" id="eta">--</div></div><div><div class="l">Speed</div><div class="v" id="spd">--</div></div></div>
+  <div class="btns"><button id="end" class="danger">End route</button><span class="grow"></span><button id="sim" title="Drive the route without moving, for testing">Test drive</button></div>
+</div>
+<div class="map" id="mapBox"><canvas id="map"></canvas></div>
+<script src="/js/carhud.js"></script>
+<script src="/js/navicon.js"></script>
+<script>
+/* Turn-by-turn on the desk, with a route map drawn from the route itself (no map tiles: the car has no internet). */
+(function () {
+  const { api, connect, $, h } = CarHud;
+  let route = null, nav = null, gps = null, simOn = false;
+  $('#end').onclick = () => api('/api/phone/route/clear', {});
+  $('#sim').onclick = () => api('/api/phone/simulate', { speed: simOn ? 0 : 60 });
+
+  function render() {
+    const active = nav && nav.active && route;
+    $('#idle').classList.toggle('hidden', !!active);
+    $('#turnBox').classList.toggle('hidden', !active);
+    $('#mapBox').classList.toggle('hidden', !active);
+    if (!active) return;
+    const c = $('#arrow').getContext('2d'); c.clearRect(0, 0, 260, 260);
+    NavIcon.draw(c, 0, 0, 260, nav.arrived ? { type: 'arrive' } : nav.next, '#ff8a2a');
+    $('#dist').textContent = nav.arrived ? 'Arrived' : nav.next ? NavIcon.dist(nav.next.distance) : '';
+    $('#text').textContent = nav.arrived ? (nav.dest || '') : nav.next ? (nav.next.text || NavIcon.text(nav.next)) : '';
+    $('#off').classList.toggle('hidden', !nav.offRoute);
+    $('#left').textContent = NavIcon.dist(nav.left);
+    $('#eta').textContent = nav.eta ? new Date(nav.eta).toTimeString().slice(0, 5) : '--';
+    const steps = route.steps || [], i = nav.next ? nav.next.index : -1;
+    const after = i >= 0 ? steps[i + 1] : null;
+    $('#then').innerHTML = '';
+    if (after && !nav.arrived) $('#then').append('Then: ' + (after.text || NavIcon.text(after)));
+    drawMap();
+  }
+
+  function drawMap() {
+    const cv = $('#map'), box = $('#mapBox');
+    const W = cv.width = box.clientWidth * 2, H = cv.height = box.clientHeight * 2;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    if (!route || !route.coords || route.coords.length < 2) return;
+    const pts = route.coords.slice();
+    if (gps) pts.push([gps.lon, gps.lat]);
+    const k = Math.cos(pts[0][1] * Math.PI / 180);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    pts.forEach(([lon, lat]) => { x0 = Math.min(x0, lon * k); x1 = Math.max(x1, lon * k); y0 = Math.min(y0, lat); y1 = Math.max(y1, lat); });
+    const pad = 40, s = Math.min((W - pad * 2) / Math.max(1e-9, x1 - x0), (H - pad * 2) / Math.max(1e-9, y1 - y0));
+    const ox = (W - (x1 - x0) * s) / 2, oy = (H - (y1 - y0) * s) / 2;
+    const P = ([lon, lat]) => [ox + (lon * k - x0) * s, H - (oy + (lat - y0) * s)];
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(255,138,42,.9)'; ctx.lineWidth = 10;
+    ctx.beginPath(); route.coords.forEach((p, i) => { const [x, y] = P(p); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.stroke();
+    (route.steps || []).forEach((st) => { if (!st.location || st.type === 'depart') return; const [x, y] = P(st.location); ctx.fillStyle = st.type === 'arrive' ? '#4cd07d' : '#fff'; ctx.beginPath(); ctx.arc(x, y, st.type === 'arrive' ? 14 : 6, 0, Math.PI * 2); ctx.fill(); });
+    if (gps) {
+      const [x, y] = P([gps.lon, gps.lat]);
+      ctx.fillStyle = '#4fa3ff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      if (gps.heading !== null && gps.heading !== undefined) {
+        const a = gps.heading * Math.PI / 180;
+        ctx.fillStyle = '#4fa3ff'; ctx.beginPath(); ctx.moveTo(x + Math.sin(a) * 34, y - Math.cos(a) * 34);
+        ctx.lineTo(x + Math.sin(a + 2.5) * 16, y - Math.cos(a + 2.5) * 16); ctx.lineTo(x + Math.sin(a - 2.5) * 16, y - Math.cos(a - 2.5) * 16); ctx.fill();
+      }
+    }
+  }
+  window.addEventListener('resize', drawMap);
+
+  connect({}, {
+    message: (m) => {
+      if (m.t === 'nav') { nav = m; render(); }
+      else if (m.t === 'route') { route = m.route; render(); }
+      else if (m.t === 'phone') {
+        gps = m.phone.gps && m.phone.gps.fresh ? m.phone.gps : null; simOn = m.phone.simulating;
+        $('#sim').textContent = simOn ? 'Stop test drive' : 'Test drive';
+        $('#spd').textContent = gps && gps.speed !== null ? Math.round(gps.speed) + ' km/h' : '--';
+        if (route) drawMap();
+      }
+    },
+  });
+})();
+</script>
+</body>
+</html>

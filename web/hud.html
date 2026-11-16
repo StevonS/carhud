@@ -14,19 +14,25 @@
   body.stats #stats { display: block; }
   #lost { position: absolute; right: 10px; top: 10px; width: 12px; height: 12px; border-radius: 50%; background: #ff3b30; display: none; }
   body.lost #lost { display: block; }
+  #bar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: none; gap: 8px; }
+  body.touched #bar { display: flex; cursor: default; }
+  #bar button { font: 15px sans-serif; color: #eee; background: rgba(27,30,35,.9); border: 1px solid #2a2e35; border-radius: 8px; padding: 9px 13px; }
 </style>
 </head>
 <body>
 <canvas id="c" width="800" height="480"></canvas>
 <div id="stats"></div>
 <div id="lost" title="connection to the carhud server lost"></div>
+<div id="bar"><button data-k="mirror">Mirror</button><button data-k="flip">Flip</button><button data-k="stats">Stats</button><button data-k="fs">Full screen</button></div>
 <script src="/js/carhud.js"></script>
+<script src="/js/navicon.js"></script>
 <script src="/js/hudview.js"></script>
 <script>
 /* The HUD on its own screen.
  *   /hud?mirror=1   flip left-right for the windshield      /hud?flip=1   flip upside down
  *   /hud?bmw=1      show where BMW's own speed readout sits    /hud?native=1 draw 1:1 instead of filling the screen
  *   /hud?stats=1    frame rate, data rate and latency          /hud?target=panel  another target
+ *   /hud?nav=0      don't draw the next turn while navigating
  * Keys: s stats, m mirror, f flip, o outlines, b BMW speed, n native size, r reload
  */
 (function () {
@@ -35,7 +41,7 @@
   ['mirror', 'flip', 'stats', 'native'].forEach((k) => body.classList.toggle(k, on(k)));
   const view = new HudView(document.getElementById('c'), { target: q.get('target') || 'hud', bmw: on('bmw'), outlines: on('outlines') });
   const link = CarHud.connect({ target: view.opts.target, data: false, fps: Number(q.get('fps')) || 0 }, {
-    message: (m) => view.message(m),
+    message: (m) => { if (m.t === 'nav' && q.get('nav') === '0') return; view.message(m); },
     binary: (b) => view.binary(b),
     open: () => body.classList.remove('lost'),
   });
@@ -48,6 +54,18 @@
       'frame age ' + (s.age === null ? '--' : s.age + ' ms') + '   round trip ' + (link.rtt === null ? '--' : link.rtt + ' ms') + '\n' +
       view.opts.target + '  ' + (link.open ? 'connected' : 'reconnecting');
   }, 500);
+  /* on a touch screen (a phone or tablet opening /hud): tap for a few buttons */
+  let barTimer = null;
+  document.addEventListener('pointerup', (e) => {
+    if (e.pointerType !== 'touch') return;
+    const b = e.target.closest && e.target.closest('#bar button');
+    if (b) {
+      if (b.dataset.k === 'fs') document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {});
+      else body.classList.toggle(b.dataset.k);
+    }
+    body.classList.add('touched'); clearTimeout(barTimer); barTimer = setTimeout(() => body.classList.remove('touched'), 4000);
+    if (navigator.wakeLock && !window._wake) navigator.wakeLock.request('screen').then((w) => { window._wake = w; }).catch(() => {});
+  });
   document.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k === 's') body.classList.toggle('stats');

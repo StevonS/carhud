@@ -80,7 +80,42 @@
     else if (m.t === 'log') addLog(m);
     else if (m.t === 'obd') renderObd(m.snap);
     else if (m.t === 'stats') renderStreams(m);
+    else if (m.t === 'phone') { phoneSt = m.phone; renderPhone(); }
+    else if (m.t === 'nav') { navSt = m; renderPhone(); }
   }
+
+  /* ---------- phone & navigation ---------- */
+  let phoneSt = null, navSt = null;
+  function renderPhone() {
+    if (!phoneSt) return;
+    const bt = phoneSt.bt || {}, d = (bt.devices || []).find((x) => x.connected), g = phoneSt.gps, md = bt.media;
+    const n = navSt && navSt.active ? navSt : null;
+    kv($('#phoneInfo'), [
+      ['Bluetooth', !bt.available ? 'not running' : !bt.adapter ? 'no adapter' : (bt.adapter.discoverable ? 'visible to phones' : 'on') + ' as ' + bt.adapter.name],
+      ['Phone', d ? d.name + (d.battery !== null && d.battery !== undefined ? ' · ' + d.battery + '%' : '') + (d.notifications ? ' · notifications' : '') : (bt.devices || []).length ? 'paired, not connected' : 'none paired'],
+      ['Playing', md && md.title ? md.title + (md.artist ? ' · ' + md.artist : '') + ' (' + md.status + ')' : null],
+      ['GPS', g ? (g.fresh ? (g.sim ? 'simulated · ' : 'from the phone · ') + Math.round(g.speed || 0) + ' km/h' + (g.accuracy ? ' · ±' + Math.round(g.accuracy) + ' m' : '') : 'last fix ' + Math.round(g.age / 1000) + ' s ago') : 'no phone sharing'],
+      ['Route', n ? (n.dest || 'destination') + ' · ' + NavIcon.dist(n.left) + ' left' + (n.offRoute ? ' · OFF ROUTE' : '') : null],
+      ['Next', n && n.next ? NavIcon.dist(n.next.distance) + ': ' + (n.next.text || NavIcon.text(n.next)) : n && n.arrived ? 'arrived' : null],
+    ]);
+    $('#bDrive').textContent = phoneSt.simulating ? 'Stop test drive' : 'Test drive';
+  }
+  $('#bPair').onclick = () => api('/api/phone/discoverable', { on: true, seconds: 180 });
+  $('#bNotif').onclick = () => api('/api/phone/test-notification', {});
+  $('#bCall').onclick = () => api('/api/phone/test-notification', { call: true });
+  $('#bEnd').onclick = () => api('/api/phone/route/clear', {});
+  $('#bDrive').onclick = () => api('/api/phone/simulate', { speed: phoneSt && phoneSt.simulating ? 0 : 60 });
+  $('#bRoute').onclick = () => {
+    const g = phoneSt && phoneSt.gps, lat = g ? g.lat : 43.3616, lon = g ? g.lon : -80.3144;
+    const dLat = 400 / 111320, dLon = 400 / (111320 * Math.cos(lat * Math.PI / 180));
+    const c = [[lon, lat], [lon, lat + dLat], [lon + dLon, lat + dLat], [lon + dLon, lat], [lon, lat]];
+    const names = ['Test Ave', 'First St', 'Second St', 'Third St'];
+    const steps = [{ type: 'depart', modifier: '', name: names[0], location: c[0], bearing: 0 }]
+      .concat([1, 2, 3].map((i) => ({ type: 'turn', modifier: 'right', name: names[i], location: c[i], distance: 400 })))
+      .concat([{ type: 'arrive', modifier: '', name: '', location: c[4] }]);
+    steps.forEach((st) => { st.text = NavIcon.text(st); });
+    api('/api/phone/route', { route: { dest: { name: 'Test loop', lat, lon }, coords: c, steps, distance: 1600, duration: 120 } });
+  };
 
   /* ---------- state: source, drive, pills ---------- */
   function renderState() {

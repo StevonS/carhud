@@ -20,6 +20,7 @@
   <h2>Actions</h2>
   <div class="actions">
     <button id="update" class="primary">Update CarHUD</button>
+    <button id="wifi">Wi-Fi hotspot</button>
     <button id="screens">Reload screens</button>
     <button id="restart">Restart CarHUD service</button>
     <button id="reboot" class="danger">Reboot</button>
@@ -37,19 +38,29 @@
       const power = !t ? null : t.underVoltageNow ? '⚠ under-voltage NOW: use a better power supply' : t.underVoltageSinceBoot ? '⚠ under-voltage happened since boot' : t.throttledNow ? '⚠ throttled (too hot?)' : 'OK';
       const rows = [
         ['Address', i.ips.map((x) => x.ip).join(', ') || 'no network'], ['Control panel', i.ips.map((x) => 'http://' + x.ip + ':' + i.port).join('  ') || '--'],
+        ['Wi-Fi', !i.wifi ? '--' : i.wifi.hotspot ? 'hotspot on (phones join "' + (cfg.apSsid || 'CarHUD') + '", password ' + (cfg.apPassword || 'in /etc/carhud.conf') + ')' : (i.wifi.connection || 'not connected')],
         ['Hostname', i.hostname], ['CarHUD', i.version + ' (' + i.commit + ')'], ['HUD project', i.evaCommit], ['Node', i.node],
         ['CPU temp', i.temp === null ? '--' : i.temp.toFixed(1) + ' °C'], ['Power', power || '--'], ['Load', i.load.map((x) => x.toFixed(2)).join('  ')],
         ['Memory', Math.round((i.memTotal - i.memFree) / 1048576) + ' / ' + Math.round(i.memTotal / 1048576) + ' MB'], ['Uptime', dur(i.uptime)], ['Config', i.config],
       ];
+      hotspot = !!(i.wifi && i.wifi.hotspot);
+      $('#wifi').textContent = hotspot ? 'Leave hotspot (join home Wi-Fi)' : 'Start Wi-Fi hotspot';
+      $('#wifi').style.display = i.wifi ? '' : 'none';
       const box = $('#info'); box.innerHTML = '';
       rows.forEach(([k, v]) => box.append(h('span', {}, k), h('span', { class: /⚠/.test(v) ? 'warnbox' : '' }, v)));
     });
   }
+  let cfg = {}, hotspot = false;
+  api('/api/phone/config').then((c) => { cfg = c; });
   load(); setInterval(load, 5000);
   const say = (t) => { $('#log').style.display = 'block'; $('#log').textContent = t; };
   const act = (path, msg, confirmText) => () => {
     if (confirmText && !confirm(confirmText)) return;
     api(path, {}).then((r) => say(r.error ? 'Not allowed: ' + r.error : msg));
+  };
+  $('#wifi').onclick = () => {
+    if (!confirm('Switch the Wi-Fi? Anything connected over Wi-Fi (SSH, a laptop) disconnects for a moment.')) return;
+    api('/api/system/wifi', { mode: hotspot ? 'home' : 'ap' }).then((r) => say(r.error ? 'Not allowed: ' + r.error : 'Switching Wi-Fi...'));
   };
   $('#screens').onclick = act('/api/system/screens', 'Reopening the screens...');
   $('#restart').onclick = act('/api/system/restart', 'Restarting the CarHUD service; the screens reconnect by themselves.');

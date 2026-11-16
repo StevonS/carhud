@@ -29,6 +29,20 @@ const DEFAULTS = {
     OBD_MULTI: 'auto',         // several PIDs per request on CAN cars: auto | 0
     OBD_GEAR_RATIOS: '',       // engine rpm per km/h in each gear, comma separated (carhud gears ... works it out)
     OBD_FUEL_AFR: '14.7',      // stoichiometric AFR of the fuel, for AFR from lambda
+    PHONE_BLUETOOTH: '1',      // the Bluetooth phone link (music, now playing, iPhone notifications)
+    PHONE_NAME: 'CarHUD',      // what phones see
+    PHONE_NOTIFICATIONS: '1',  // iPhone notifications over Bluetooth LE (ANCS)
+    PHONE_ADAPTER: '',         // hci0 etc., empty = the first one
+    PHONE_AUDIO_DEVICE: 'default',
+    PHONE_PYTHON: 'python3',
+    PHONE_HTTPS_PORT: '8443',  // the phone web app (GPS needs https)
+    PHONE_TLS_DIR: '/var/lib/carhud/tls',
+    PHONE_GEOCODER_URL: 'https://nominatim.openstreetmap.org',
+    PHONE_ROUTER_URL: 'https://router.project-osrm.org',
+    HUD_NAV: '1',              // show the next turn on the HUD while navigating
+    PHONE_AP: 'auto',          // the car Wi-Fi hotspot: auto (when no known Wi-Fi) | on | off   (set up by the installer)
+    PHONE_AP_SSID: 'CarHUD',
+    PHONE_AP_PASSWORD: '',
 };
 
 function parse(text) {

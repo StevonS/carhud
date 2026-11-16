@@ -58,11 +58,14 @@
         clearInterval(pingTimer);
         if (link.open) { link.closedSince = Date.now(); handlers.close && handlers.close(); }
         link.open = false;
+        if (link.stopped) return;
         setTimeout(start, retry); retry = Math.min(retry * 2, 4000);
       };
     }
     /** change target / fps etc. and reconnect with them */
     link.reopen = (changes) => { Object.assign(opts, changes || {}); retry = 50; if (link.ws) link.ws.close(); };
+    /** stop for good (no reconnecting) */
+    link.close = () => { link.stopped = true; if (link.ws) link.ws.close(); };
     start();
     return link;
   }

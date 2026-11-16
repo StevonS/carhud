@@ -1,0 +1,10 @@
+{
+  "dest": { "name": "Test destination", "lat": 43.3670, "lon": -80.3082 },
+  "distance": 1100, "duration": 90,
+  "coords": [[-80.3144, 43.3616], [-80.3144, 43.3643], [-80.3144, 43.3670], [-80.3113, 43.3670], [-80.3082, 43.3670]],
+  "steps": [
+    { "type": "depart", "modifier": "", "name": "Water St", "distance": 600, "location": [-80.3144, 43.3616], "text": "Head north on Water St" },
+    { "type": "turn", "modifier": "right", "name": "Main St", "distance": 500, "location": [-80.3144, 43.3670], "text": "Turn right onto Main St" },
+    { "type": "arrive", "modifier": "", "name": "", "distance": 0, "location": [-80.3082, 43.3670], "text": "You have arrived" }
+  ]
+}

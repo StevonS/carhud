@@ -31,9 +31,10 @@ remember() { [ -f "$STATE/$1.new" ] && mv "$STATE/$1.new" "$STATE/$1"; true; }
 echo "CarHUD $VERSION: $MODE for user '$USER_NAME' from $DIR ($(date))"
 
 # ---------------------------------------------------------------------------------------------
-step "1/9  System packages"
+step "1/10  System packages"
 PKGS="xserver-xorg xinit x11-xserver-utils xinput lightdm lightdm-gtk-greeter openbox obconf tint2 pcmanfm lxterminal mousepad
-unclutter git curl ca-certificates nodejs python3 python3-pil fonts-dejavu-core fonts-noto-color-emoji openssh-server alsa-utils"
+unclutter git curl ca-certificates nodejs python3 python3-pil fonts-dejavu-core fonts-noto-color-emoji openssh-server alsa-utils
+bluez python3-dbus python3-gi openssl avahi-daemon iw rfkill"
 export DEBIAN_FRONTEND=noninteractive
 if [ "$MODE" = install ] || changed packages "$PKGS"; then
     apt-get update
@@ -41,6 +42,10 @@ if [ "$MODE" = install ] || changed packages "$PKGS"; then
     # shellcheck disable=SC2086
     apt-get install -y --no-install-recommends $PKGS
     apt-get install -y chromium || apt-get install -y chromium-browser
+    # Bluetooth audio and the hotspot: apart, so one missing package doesn't stop the install
+    apt-get install -y --no-install-recommends bluez-alsa-utils || echo "WARNING: bluez-alsa-utils not available: phone music won't play through the Pi"
+    command -v nmcli >/dev/null || apt-get install -y --no-install-recommends network-manager || echo "WARNING: no NetworkManager: no Wi-Fi hotspot"
+    apt-get install -y --no-install-recommends dnsmasq-base || true
     changed packages "$PKGS" || true; remember packages
 else
     echo "no package changes"
@@ -49,10 +54,10 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 [ "$NODE_MAJOR" -ge 16 ] || { echo "Node $NODE_MAJOR is too old (need 16+)"; exit 1; }
 
 # ---------------------------------------------------------------------------------------------
-step "2/9  SSH, auto-login desktop, Pi settings"
+step "2/10  SSH, auto-login desktop, Pi settings"
 systemctl enable --now ssh >/dev/null 2>&1 || true
 groupadd -f autologin
-usermod -aG autologin,video,input,plugdev,dialout,audio "$USER_NAME"     # dialout: the OBD-II cable
+usermod -aG autologin,video,input,plugdev,dialout,audio,bluetooth "$USER_NAME"     # dialout: the OBD-II cable; bluetooth: the phone link
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-carhud.conf <<EOF
 [Seat:*]
@@ -74,7 +79,7 @@ if [ -f /etc/dphys-swapfile ] && ! grep -q '^CONF_SWAPSIZE=1024' /etc/dphys-swap
 fi
 
 # ---------------------------------------------------------------------------------------------
-step "3/9  Settings ($CONF)"
+step "3/10  Settings ($CONF)"
 DEFAULT_CONF=$(sed "s#/home/USER#$USER_HOME#g" "$DIR/system/carhud.conf")
 if [ ! -f "$CONF" ]; then
     echo "$DEFAULT_CONF" > "$CONF"; echo "created $CONF"
@@ -108,7 +113,7 @@ USER_APPS=$(conf_get USER_APPS_DIR); USER_APPS=${USER_APPS:-$USER_HOME/carhud-ap
 MEDIA=$(conf_get MEDIA_DIR); MEDIA=${MEDIA:-$USER_HOME/Music}
 
 # ---------------------------------------------------------------------------------------------
-step "4/9  HUD project (idrive7-EVAHUD)"
+step "4/10  HUD project (idrive7-EVAHUD)"
 EVA_URL=https://github.com/PenguinDukeYDAuto/idrive7-EVAHUD.git
 EVA_REF=$(cat "$DIR/eva.ref")
 EGIT="git -c safe.directory=$EVA_DIR -C $EVA_DIR"
@@ -121,7 +126,7 @@ else
     echo "HUD project already at $(echo "$EVA_REF" | cut -c1-7)"
 fi
 
-step "5/9  HUD fonts and layouts"
+step "5/10  HUD fonts and layouts"
 FONTS=$EVA_DIR/tools/fonts-src; SUBDIR=$STATE/fonts
 mkdir -p "$FONTS" "$SUBDIR"
 BARLOW=https://raw.githubusercontent.com/jpt/barlow/main/fonts/ttf
@@ -150,7 +155,7 @@ fi
 chown -R "$USER_NAME:$USER_NAME" "$EVA_DIR"
 
 # ---------------------------------------------------------------------------------------------
-step "6/9  Commands"
+step "6/10  Commands"
 chown -R "$USER_NAME:$USER_NAME" "$DIR"
 chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update"
 # v1 copied these in; v2 links them to this checkout so updates reach them
@@ -160,7 +165,7 @@ ln -sf "$DIR/system/carhud-screens" /usr/local/bin/carhud-screens
 ln -sf "$DIR/system/carhud-mode" /usr/local/bin/carhud-mode
 ln -sf "$DIR/system/carhud-update" /usr/local/bin/carhud-update
 
-step "7/9  Desk apps, music folder, USB rules"
+step "7/10  Desk apps, music folder, USB rules"
 sudo -u "$USER_NAME" mkdir -p "$USER_APPS" "$MEDIA"
 if [ ! -e "$USER_APPS/README.txt" ]; then
     sudo -u "$USER_NAME" cp "$DIR/desk/template/README.txt" "$USER_APPS/README.txt"
@@ -173,7 +178,7 @@ EOF
 rm -f /etc/udev/rules.d/52-carplay-dongle.rules
 udevadm control --reload-rules || true
 
-step "8/9  Desktop session"
+step "8/10  Desktop session"
 OB=$USER_HOME/.config/openbox
 sudo -u "$USER_NAME" mkdir -p "$OB"
 cat > "$OB/autostart" <<'EOF'
@@ -188,7 +193,86 @@ EOF
 chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.config"
 
 # ---------------------------------------------------------------------------------------------
-step "9/9  CarHUD service"
+step "9/10  Phone link: Bluetooth, Wi-Fi hotspot, certificate"
+PHONE_NAME=$(conf_get PHONE_NAME); PHONE_NAME=${PHONE_NAME:-CarHUD}
+# Bluetooth: a car audio device named CarHUD that stays on
+if [ -f /etc/bluetooth/main.conf ]; then
+    python3 "$DIR/tools/bt_mainconf.py" /etc/bluetooth/main.conf "$PHONE_NAME"
+fi
+rfkill unblock bluetooth 2>/dev/null || true
+systemctl enable bluetooth >/dev/null 2>&1 || true
+systemctl restart bluetooth || echo "WARNING: bluetooth service did not start"
+
+# phone music: bluez-alsa takes the phone's audio and plays it on PHONE_AUDIO_DEVICE
+BA=$(command -v bluealsad || command -v bluealsa || true)
+if [ -n "$BA" ] && command -v bluealsa-aplay >/dev/null; then
+    BA_UNIT=$(basename "$BA")
+    if pgrep -x pipewire >/dev/null; then echo "WARNING: PipeWire is running and may take Bluetooth audio instead of bluez-alsa"; fi
+    mkdir -p "/etc/systemd/system/$BA_UNIT.service.d"
+    printf '[Service]\nExecStart=\nExecStart=%s -S -p a2dp-sink\n' "$BA" > "/etc/systemd/system/$BA_UNIT.service.d/carhud.conf"
+    AUDIO_DEV=$(conf_get PHONE_AUDIO_DEVICE); AUDIO_DEV=${AUDIO_DEV:-default}
+    sed -e "s#@APLAY@#$(command -v bluealsa-aplay)#" -e "s#@PCM@#$AUDIO_DEV#" -e "s#@BA@#$BA_UNIT#g" "$DIR/system/carhud-btaudio.service" > /etc/systemd/system/carhud-btaudio.service
+    systemctl daemon-reload
+    systemctl enable "$BA_UNIT" carhud-btaudio >/dev/null 2>&1 || true
+    systemctl restart "$BA_UNIT" carhud-btaudio || echo "WARNING: Bluetooth audio services did not start"
+else
+    echo "WARNING: bluez-alsa is not installed: phone music won't play through the Pi"
+fi
+
+# Wi-Fi hotspot for the phone app in the car (NetworkManager). Only added, never switched on here,
+# so an SSH session over Wi-Fi stays up. PHONE_AP=auto: used when no known Wi-Fi is in range.
+AP_MODE=$(conf_get PHONE_AP); AP_MODE=${AP_MODE:-auto}
+AP_SSID=$(conf_get PHONE_AP_SSID); AP_SSID=${AP_SSID:-CarHUD}
+AP_PASS=$(conf_get PHONE_AP_PASSWORD)
+if [ -z "$AP_PASS" ]; then
+    AP_PASS=$(tr -dc 'a-km-z2-9' < /dev/urandom | head -c 10 || true)
+    if grep -q '^PHONE_AP_PASSWORD=' "$CONF"; then sed -i "s/^PHONE_AP_PASSWORD=.*/PHONE_AP_PASSWORD=$AP_PASS/" "$CONF"; else echo "PHONE_AP_PASSWORD=$AP_PASS" >> "$CONF"; fi
+    echo "hotspot password created: $AP_PASS (in $CONF)"
+fi
+if command -v nmcli >/dev/null && systemctl is-active --quiet NetworkManager; then
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi"{print $1; exit}')
+    ACTIVE_AP=$(nmcli -t -f NAME connection show --active | grep -x carhud-ap || true)
+    if [ "$AP_MODE" != off ] && [ -n "$WIFI_IF" ]; then
+        PRIO=-100; [ "$AP_MODE" = on ] && PRIO=100
+        if nmcli -t -f NAME connection show | grep -qx carhud-ap; then
+            # change it in place: deleting it would drop phones connected to it right now
+            nmcli connection modify carhud-ap 802-11-wireless.ssid "$AP_SSID" wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO"
+        else
+            nmcli connection add type wifi ifname "$WIFI_IF" con-name carhud-ap autoconnect yes ssid "$AP_SSID" \
+                802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared ipv4.addresses 10.42.0.1/24 \
+                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" >/dev/null
+        fi
+        echo "hotspot \"$AP_SSID\" ready (PHONE_AP=$AP_MODE)${ACTIVE_AP:+, on now}"
+        if iw reg get 2>/dev/null | grep -q 'country 00'; then echo "WARNING: no Wi-Fi country set (sudo raspi-config → Localisation → WLAN Country): the hotspot may not start"; fi
+    else
+        [ -z "$ACTIVE_AP" ] && nmcli connection delete carhud-ap >/dev/null 2>&1 || true
+        echo "hotspot off (PHONE_AP=$AP_MODE)"
+    fi
+else
+    echo "WARNING: NetworkManager not running: no hotspot (the phone app still works on a shared Wi-Fi)"
+fi
+
+# certificate for the phone app (browsers only share GPS over https): our own small CA the phone trusts once
+TLS=$STATE/tls; mkdir -p "$TLS"
+HOST=$(hostname)
+if [ ! -s "$TLS/ca.key" ]; then
+    openssl req -x509 -new -nodes -newkey rsa:2048 -sha256 -days 3650 -keyout "$TLS/ca.key" -out "$TLS/ca.crt" \
+        -subj "/CN=CarHUD $HOST local CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+    echo "created the CarHUD certificate authority"
+fi
+if [ ! -s "$TLS/server.crt" ] || ! openssl x509 -in "$TLS/server.crt" -noout -ext subjectAltName 2>/dev/null | grep -q "$HOST.local" \
+   || ! openssl x509 -in "$TLS/server.crt" -noout -checkend 2592000 >/dev/null 2>&1; then
+    openssl req -new -nodes -newkey rsa:2048 -keyout "$TLS/server.key" -out "$TLS/server.csr" -subj "/CN=$HOST.local" 2>/dev/null
+    printf 'subjectAltName=DNS:%s.local,DNS:%s,DNS:localhost,IP:10.42.0.1,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' "$HOST" "$HOST" > "$TLS/server.ext"
+    # 825 days: the longest an iPhone accepts
+    openssl x509 -req -in "$TLS/server.csr" -CA "$TLS/ca.crt" -CAkey "$TLS/ca.key" -CAcreateserial -out "$TLS/server.crt" -days 825 -sha256 -extfile "$TLS/server.ext" 2>/dev/null
+    rm -f "$TLS/server.csr"
+    echo "certificate for $HOST.local and 10.42.0.1 made"
+fi
+chown -R "$USER_NAME:$USER_NAME" "$TLS"; chmod 600 "$TLS"/*.key
+
+# ---------------------------------------------------------------------------------------------
+step "10/10  CarHUD service"
 if systemctl list-unit-files evahud.service >/dev/null 2>&1 && [ -f /etc/systemd/system/evahud.service ]; then
     echo "replacing v1's evahud service"
     systemctl disable --now evahud >/dev/null 2>&1 || true
@@ -223,6 +307,8 @@ EOF
 fi
 cat <<EOF
  Control panel:  http://$(hostname).local:$(conf_get HUD_PORT)/   or   http://${IP:-<pi-ip>}:$(conf_get HUD_PORT)/
+ Phone setup:    http://$(hostname).local:$(conf_get HUD_PORT)/phone/setup.html   (in the car: http://10.42.0.1:$(conf_get HUD_PORT)/phone/setup.html)
+ Car hotspot:    $(conf_get PHONE_AP_SSID)   password $(conf_get PHONE_AP_PASSWORD)
  Commands:       carhud help
  Update later:   carhud update
 =====================================================================

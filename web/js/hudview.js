@@ -25,6 +25,7 @@
       this.stats = { redraws: 0, fps: 0, bytes: 0, kbps: 0, age: null, msgs: 0, mps: 0 };
       this._statT = performance.now(); this._r = 0; this._b = 0; this._m = 0;
       this.onError = null;
+      this.nav = null;
       this._initGl();
       this.setTarget(this.opts.target);
       const loop = (t) => { this._frame(t); requestAnimationFrame(loop); };
@@ -39,7 +40,11 @@
       this.dirty = true;
     }
 
+    /** navigation from the server ({t:'nav'}): the next turn is drawn where BMW's own speed readout would be */
+    setNav(m) { this.nav = m; this.dirty = true; }
+
     message(m) {
+      if (m.t === 'nav') return this.setNav(m);
       if (m.t !== 'scene') return;
       this.scene = m.layers;
       const keys = new Set(this.scene.map((l) => l.key));
@@ -145,6 +150,7 @@
           ctx.restore();
         });
         if (this.opts.target === 'hud' && this.opts.bmw) this._bmwSpeed();
+        if (this.opts.target === 'hud' && this.nav && this.nav.active && this.nav.show && window.NavIcon) this._navTurn();
         if (this.opts.outlines) {
           ctx.font = '11px monospace';
           ls.forEach((l) => {
@@ -176,6 +182,26 @@
       ctx.font = '700 15px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('km/h', 303, 350);
       ctx.fillRect(137, 320, 57, 62);
       ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.font = '700 22px sans-serif'; ctx.fillText('40', 165, 349);
+      ctx.restore();
+    }
+
+    _navTurn() {
+      const ctx = this.ctx, n = this.nav, x = 132, y = 316, orange = '#ff8a2a';
+      ctx.save();
+      ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+      if (n.arrived) {
+        NavIcon.draw(ctx, x, y, 66, { type: 'arrive' }, orange);
+        ctx.fillStyle = '#fff'; ctx.font = '700 30px sans-serif'; ctx.fillText('Arrived', x + 76, y + 44);
+      } else if (n.offRoute) {
+        ctx.fillStyle = orange; ctx.font = '700 26px sans-serif'; ctx.fillText('Rerouting...', x + 4, y + 42);
+      } else if (n.next) {
+        NavIcon.draw(ctx, x, y, 66, n.next, orange);
+        ctx.fillStyle = '#fff'; ctx.font = '700 32px sans-serif'; ctx.fillText(NavIcon.dist(n.next.distance), x + 76, y + 34);
+        ctx.font = '600 15px sans-serif'; ctx.fillStyle = '#e6e6e6';
+        let street = n.next.name || NavIcon.text(n.next);
+        while (street.length > 3 && ctx.measureText(street).width > 150) street = street.slice(0, -2);
+        ctx.fillText(street !== (n.next.name || NavIcon.text(n.next)) ? street + '…' : street, x + 78, y + 58);
+      }
       ctx.restore();
     }
 

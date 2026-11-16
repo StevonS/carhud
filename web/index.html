@@ -108,6 +108,17 @@
       <div id="settings" class="muted">waiting for the app</div>
     </section>
     <section class="card">
+      <h2>Phone &amp; navigation</h2>
+      <div class="kv" id="phoneInfo"></div>
+      <div class="seg" style="margin-top:10px">
+        <button id="bPair">Pair a phone</button><button id="bNotif">Test notification</button><button id="bCall">Test call</button>
+      </div>
+      <div class="seg" style="margin-top:6px">
+        <button id="bRoute">Test route here</button><button id="bDrive">Test drive</button><button id="bEnd">End route</button>
+      </div>
+      <div class="note">Test route: a 1.6 km loop where the phone (or the simulator) last was. Test drive moves along it at 60 km/h, as if a phone were sharing GPS.</div>
+    </section>
+    <section class="card">
       <h2>OBD-II <span class="grow"></span><button id="bObdRe" style="text-transform:none">Reconnect</button></h2>
       <div class="kv" id="obdInfo"></div>
       <div class="kv" id="obdGear" style="margin-top:8px"></div>
@@ -118,6 +129,7 @@
   </div>
 </main>
 <script src="/js/carhud.js"></script>
+<script src="/js/navicon.js"></script>
 <script src="/js/hudview.js"></script>
 <script src="/js/control.js"></script>
 </body>

@@ -22,6 +22,21 @@
   iframe.app { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); display: none; }
   iframe.app.show { display: block; }
   #toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; display: none; }
+  #np { max-width: 34%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: 13px; cursor: pointer; }
+  #pPhone { cursor: pointer; }
+  /* pairing: full-screen question */
+  #pair { position: absolute; inset: 0; background: rgba(5,6,8,.92); display: none; place-items: center; z-index: 20; text-align: center; }
+  #pair.show { display: grid; }
+  #pair .code { font-size: 64px; font-weight: 800; letter-spacing: .12em; color: var(--accent); font-variant-numeric: tabular-nums; margin: 10px 0; }
+  #pair button { font-size: 20px; padding: 14px 34px; margin: 10px 8px 0; }
+  /* notifications: a banner over everything */
+  #banners { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); width: min(560px, 94%); display: flex; flex-direction: column; gap: 8px; z-index: 15; pointer-events: none; }
+  .banner { pointer-events: auto; background: rgba(27,30,35,.97); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; padding: 10px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.5); animation: drop .25s ease-out; }
+  .banner.call { border-left-color: var(--ok); }
+  .banner .app { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+  .banner .t { font-weight: 650; font-size: 16px; } .banner .m { color: var(--dim); font-size: 14px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .banner .acts { display: flex; gap: 8px; margin-top: 8px; } .banner .acts button { flex: 1; padding: 10px; font-size: 16px; }
+  @keyframes drop { from { transform: translateY(-20px); opacity: 0; } to { transform: none; opacity: 1; } }
 </style>
 </head>
 <body>
@@ -29,6 +44,8 @@
   <button id="home" title="Home">⌂</button>
   <span id="title">Home</span>
   <span class="grow"></span>
+  <span id="np"></span>
+  <span id="pPhone" class="pill" style="display:none"></span>
   <span id="pObd" class="pill">OBD</span>
   <span id="pSrc" class="pill accent">HUD</span>
   <span id="clock">--:--</span>
@@ -36,6 +53,10 @@
 <div id="stage">
   <div id="launcher"></div>
   <div id="toast"></div>
+  <div id="banners"></div>
+  <div id="pair"><div><div style="font-size:18px">Pair with <b id="pairName"></b>?</div>
+    <div class="muted">Check the phone shows the same code.</div><div class="code" id="pairCode"></div>
+    <button class="primary" id="pairYes">Pair</button><button id="pairNo">Decline</button></div></div>
 </div>
 <script src="/js/carhud.js"></script>
 <script>
@@ -83,14 +104,57 @@
   const tick = () => { const d = new Date(); $('#clock').textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
   tick(); setInterval(tick, 5000);
 
-  connect({ data: false }, {
+  const openApp = (id) => { const a = apps.find((x) => x.id === id); if (a) open(a); };
+  $('#np').onclick = () => openApp('phone');
+  $('#pPhone').onclick = () => openApp('phone');
+  $('#pairYes').onclick = () => { CarHud.api('/api/phone/pair', { accept: true }); $('#pair').classList.remove('show'); };
+  $('#pairNo').onclick = () => { CarHud.api('/api/phone/pair', { accept: false }); $('#pair').classList.remove('show'); };
+
+  function showPair(p) {
+    $('#pair').classList.toggle('show', !!p);
+    if (!p) return;
+    $('#pairName').textContent = p.name; $('#pairCode').textContent = p.passkey || '';
+  }
+  const banners = new Map(), seenCalls = new Set();
+  function banner(n) {
+    const call = n.category === 'incoming-call';
+    if (call) seenCalls.add(n.uid);
+    const old = banners.get(n.uid); if (old) old.remove();
+    const el = h('div', { class: 'banner' + (call ? ' call' : '') },
+      h('div', { class: 'app' }, n.appName || n.category), h('div', { class: 't' }, n.title || ''), n.message ? h('div', { class: 'm' }, n.message) : '',
+      n.positive || n.negative ? h('div', { class: 'acts' },
+        n.positive ? h('button', { class: 'primary', onclick: () => { CarHud.api('/api/phone/notification', { uid: n.uid, positive: true }); drop(n.uid); } }, n.positive) : '',
+        n.negative ? h('button', { onclick: () => { CarHud.api('/api/phone/notification', { uid: n.uid, positive: false }); drop(n.uid); } }, n.negative) : '') : '');
+    el.onclick = (e) => { if (e.target.tagName !== 'BUTTON') drop(n.uid); };
+    banners.set(n.uid, el);
+    $('#banners').prepend(el);
+    while ($('#banners').children.length > 3) $('#banners').lastChild.remove();
+    if (!call) setTimeout(() => drop(n.uid), 7000);       // calls stay until answered, declined or gone
+  }
+  function drop(uid) { const el = banners.get(uid); if (el) { el.remove(); banners.delete(uid); } }
+
+  connect({}, {
     message: (m) => {
-      if (m.t !== 'state') return;
-      const o = m.obd || {};
-      const p = $('#pObd');
-      p.className = 'pill ' + (o.state === 'live' ? 'ok' : o.state === 'waiting' ? 'warn' : '');
-      p.textContent = o.state === 'live' ? 'OBD live' : o.state === 'waiting' ? 'OBD: car off' : 'no OBD';
-      $('#pSrc').textContent = 'HUD ' + m.source;
+      if (m.t === 'state') {
+        const o = m.obd || {};
+        const p = $('#pObd');
+        p.className = 'pill ' + (o.state === 'live' ? 'ok' : o.state === 'waiting' ? 'warn' : '');
+        p.textContent = o.state === 'live' ? 'OBD live' : o.state === 'waiting' ? 'OBD: car off' : 'no OBD';
+        $('#pSrc').textContent = 'HUD ' + m.source;
+      } else if (m.t === 'phone') {
+        const bt = m.phone.bt || {}, d = (bt.devices || []).find((x) => x.connected);
+        const pp = $('#pPhone');
+        pp.style.display = d ? '' : 'none';
+        if (d) { pp.className = 'pill ok'; pp.textContent = d.name + (d.battery !== null && d.battery !== undefined ? ' ' + d.battery + '%' : ''); }
+        const md = bt.media;
+        $('#np').textContent = md && md.title && md.status === 'playing' ? '♫ ' + md.title + (md.artist ? ' · ' + md.artist : '') : '';
+        showPair(m.phone.pairing);
+        const live = new Set((m.phone.notifications || []).map((x) => x.uid));
+        Array.from(banners.keys()).forEach((uid) => { if (!live.has(uid)) drop(uid); });
+        // a call that was already ringing when the desk (re)opened
+        (m.phone.notifications || []).forEach((x) => { if (x.category === 'incoming-call' && !banners.has(x.uid) && !seenCalls.has(x.uid)) { seenCalls.add(x.uid); banner(x); } });
+      } else if (m.t === 'pair') showPair(m.pair);
+      else if (m.t === 'notification') banner(m.n);
     },
   });
 })();

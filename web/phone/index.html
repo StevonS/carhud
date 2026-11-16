@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CarHUD">
+<meta name="theme-color" content="#0a0b0d">
+<link rel="manifest" href="/phone/manifest.json">
+<link rel="apple-touch-icon" href="/phone/icon-180.png">
+<title>CarHUD</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { min-height: 100vh; padding: calc(env(safe-area-inset-top) + 10px) 14px calc(env(safe-area-inset-bottom) + 14px); display: flex; flex-direction: column; gap: 12px; font-size: 16px; }
+  header { display: flex; align-items: center; gap: 8px; }
+  header h1 { font-size: 20px; margin: 0; } header h1 b { color: var(--accent); }
+  .big { font-size: 64px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big small { font-size: 16px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+  button { padding: 12px 14px; font-size: 16px; border-radius: 12px; }
+  button.wide { width: 100%; }
+  .share.on { background: rgba(76,208,125,.15); border-color: var(--ok); color: var(--ok); }
+  input[type=search] { width: 100%; font-size: 17px; padding: 12px 14px; border-radius: 12px; background: var(--panel2); border: 1px solid var(--line); }
+  .results { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .res { padding: 10px 12px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); }
+  .res b { display: block; } .res span { color: var(--dim); font-size: 13px; }
+  .turn { display: grid; grid-template-columns: 76px 1fr; gap: 12px; align-items: center; }
+  .turn .d { font-size: 34px; font-weight: 750; } .turn .s { color: var(--dim); }
+  .warn { color: var(--warn); font-size: 14px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chips button { padding: 6px 10px; font-size: 14px; border-radius: 999px; }
+  .hidden { display: none !important; }
+  /* the HUD on the phone: full screen, landscape */
+  #hudOverlay { position: fixed; inset: 0; background: #000; z-index: 50; display: none; }
+  #hudOverlay.show { display: block; }
+  #hudOverlay canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #hudOverlay.mirror canvas { transform: scaleX(-1); }
+  #hudOverlay.flip canvas { transform: scaleY(-1); }
+  #hudOverlay.mirror.flip canvas { transform: scale(-1, -1); }
+  #hudBar { z-index: 2; position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 12px); transform: translateX(-50%); display: flex; gap: 8px; transition: opacity .3s; }
+  #hudBar.fade { opacity: 0; pointer-events: none; }
+  #hudBar button { background: rgba(27,30,35,.9); padding: 10px 14px; font-size: 15px; }
+  #hudBar button.on { border-color: var(--accent); color: var(--accent); }
+  #hudStats { position: absolute; left: 10px; top: calc(env(safe-area-inset-top) + 8px); font: 12px monospace; color: #7fdc9a; background: rgba(0,0,0,.6); padding: 3px 6px; border-radius: 4px; }
+  #rotate { position: absolute; inset: 0; display: none; place-items: center; color: var(--dim); text-align: center; pointer-events: none; }
+  @media (orientation: portrait) { #hudOverlay.show #rotate { display: grid; } }
+</style>
+</head>
+<body>
+<header><h1><b>CAR</b>HUD</h1><span class="grow"></span><span id="link" class="pill">connecting</span></header>
+
+<div id="insecure" class="card hidden">
+  <b>Location needs the secure address.</b>
+  <div class="note" style="font-size:14px">This page was opened over http, so the browser won't share GPS. <a id="secureLink" style="color:var(--accent)">Open the secure page</a>. The first time, follow the <a href="/phone/setup.html" style="color:var(--accent)">setup steps</a>.</div>
+</div>
+
+<section class="card">
+  <div class="row"><div class="big" id="speed">--<small>km/h</small></div><span class="grow"></span>
+    <div style="text-align:right"><div id="acc" class="muted" style="font-size:13px"></div><div id="hudSrc" class="muted" style="font-size:13px"></div></div></div>
+  <button id="share" class="wide share" style="margin-top:12px">Share location with the HUD</button>
+  <div class="note" id="shareNote">Keep this page open on the phone mount while driving: phones stop sharing location from background pages.</div>
+</section>
+
+<section class="card">
+  <div class="row2"><button id="showHud" class="primary">Show HUD</button><a href="/desk/" style="display:contents"><button>Open desk</button></a></div>
+  <div class="note">Show HUD fills this phone with the live HUD. Turn the phone sideways. Use Mirror to lay it on the dash under the windshield as a reflection HUD.</div>
+</section>
+
+<section class="card" id="navCard">
+  <h2>Navigate</h2>
+  <div id="navActive" class="hidden">
+    <div class="turn"><canvas id="arrow" width="152" height="152" style="width:76px;height:76px"></canvas><div><div class="d" id="tDist"></div><div id="tText"></div><div class="s" id="tLeft"></div></div></div>
+    <div class="warn hidden" id="reroute" style="margin-top:8px">Off the route: finding a new one...</div>
+    <div class="row2" style="margin-top:12px"><button id="end">End</button><button id="again">Reroute</button></div>
+  </div>
+  <div id="navIdle">
+    <input type="search" id="q" placeholder="Where to?" autocomplete="off" enterkeyhint="search">
+    <div class="chips" id="recent"></div>
+    <div class="results" id="results"></div>
+    <div class="note" id="navNote"></div>
+  </div>
+</section>
+
+<div id="hudOverlay">
+  <canvas id="hudCanvas" width="800" height="480"></canvas>
+  <div id="rotate"><div>Turn the phone sideways<br>for a bigger HUD</div></div>
+  <div id="hudStats"></div>
+  <div id="hudBar"><button id="hMirror">Mirror</button><button id="hFlip">Flip</button><button id="hStats">Stats</button><button id="hClose">Close</button></div>
+</div>
+
+<script src="/js/carhud.js"></script>
+<script src="/js/navicon.js"></script>
+<script src="/js/hudview.js"></script>
+<script>
+/* The CarHUD phone app: shares the phone's GPS with the HUD and plans routes with the phone's own
+ * internet (the Pi's hotspot has none), then the Pi follows the route and shows the turns. */
+(function () {
+  const { api, connect, $, h } = CarHud;
+  let cfg = { geocoder: 'https://nominatim.openstreetmap.org', router: 'https://router.project-osrm.org' };
+  let watchId = null, lastFix = null, wake = null, nav = null, rerouteAt = 0;
+
+  if (!window.isSecureContext) {
+    $('#insecure').classList.remove('hidden');
+    api('/api/phone/config').then((c) => {
+      if (c.httpsPort) $('#secureLink').href = 'https://' + location.hostname + ':' + c.httpsPort + '/phone/';
+      else $('#secureLink').textContent = '(the Pi has no certificate yet: run carhud update)';
+    });
+  }
+  api('/api/phone/config').then((c) => { Object.assign(cfg, c); });
+
+  const link = connect({}, {
+    open: () => { $('#link').className = 'pill ok'; $('#link').textContent = 'connected'; },
+    close: () => { $('#link').className = 'pill bad'; $('#link').textContent = 'no connection to the Pi'; },
+    message: (m) => {
+      if (m.t === 'state') $('#hudSrc').textContent = 'HUD: ' + m.source;
+      if (m.t === 'nav') { nav = m; renderNav(); }
+    },
+  });
+
+  /* ---------- the HUD on this phone ---------- */
+  const ov = $('#hudOverlay');
+  let hudView = null, hudLink = null, barTimer = null, hudWake = null, statsTimer = null;
+  const prefs = (() => { try { return JSON.parse(localStorage.getItem('carhud.phoneHud') || '{}'); } catch (e) { return {}; } })();
+  const savePrefs = () => { try { localStorage.setItem('carhud.phoneHud', JSON.stringify(prefs)); } catch (e) { /* private */ } };
+  function showBar() { $('#hudBar').classList.remove('fade'); clearTimeout(barTimer); barTimer = setTimeout(() => $('#hudBar').classList.add('fade'), 3500); }
+  function syncToggles() {
+    ['mirror', 'flip'].forEach((k) => ov.classList.toggle(k, !!prefs[k]));
+    $('#hMirror').classList.toggle('on', !!prefs.mirror); $('#hFlip').classList.toggle('on', !!prefs.flip); $('#hStats').classList.toggle('on', !!prefs.stats);
+    $('#hudStats').style.display = prefs.stats ? '' : 'none';
+  }
+  $('#showHud').onclick = async () => {
+    ov.classList.add('show'); syncToggles(); showBar();
+    if (!hudView) {
+      hudView = new HudView($('#hudCanvas'), { target: 'hud' });
+      hudLink = connect({ target: 'hud', data: false }, { message: (m) => hudView.message(m), binary: (b) => hudView.binary(b) });
+    }
+    try { await document.documentElement.requestFullscreen(); } catch (e) { /* iPhone: add to home screen for full screen */ }
+    try { hudWake = await navigator.wakeLock.request('screen'); } catch (e) { /* not supported */ }
+    clearInterval(statsTimer);
+    statsTimer = setInterval(() => { const st = hudView.stats; $('#hudStats').textContent = st.fps + ' fps · ' + st.kbps + ' KB/s · rtt ' + (hudLink.rtt === null ? '--' : hudLink.rtt) + ' ms'; }, 500);
+  };
+  $('#hClose').onclick = (e) => {
+    e.stopPropagation(); ov.classList.remove('show'); clearInterval(statsTimer);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (hudWake) { hudWake.release(); hudWake = null; }
+    if (hudLink) { hudLink.close(); hudLink = null; hudView = null; }      // stop the stream while it isn't shown
+  };
+  [['hMirror', 'mirror'], ['hFlip', 'flip'], ['hStats', 'stats']].forEach(([id, k]) => {
+    $('#' + id).onclick = (e) => { e.stopPropagation(); prefs[k] = !prefs[k]; savePrefs(); syncToggles(); showBar(); };
+  });
+  ov.onclick = showBar;
+
+  /* ---------- location ---------- */
+  function send(p) {
+    const c = p.coords;
+    lastFix = { lat: c.latitude, lon: c.longitude, speed: c.speed === null || c.speed < 0 ? null : c.speed, heading: c.heading === null || isNaN(c.heading) ? null : c.heading, accuracy: c.accuracy };
+    $('#speed').firstChild.textContent = lastFix.speed === null ? '--' : Math.round(lastFix.speed * 3.6);
+    $('#acc').textContent = '± ' + Math.round(c.accuracy) + ' m';
+    if (link.open) link.ws.send(JSON.stringify(Object.assign({ t: 'gps' }, lastFix)));
+  }
+  async function startShare() {
+    if (!navigator.geolocation) { $('#shareNote').textContent = 'This browser has no location.'; return; }
+    watchId = navigator.geolocation.watchPosition(send, (e) => { $('#shareNote').textContent = 'Location: ' + e.message + (e.code === 1 ? ' (allow location for this page in Settings)' : ''); },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+    try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* not supported */ }
+    $('#share').classList.add('on'); $('#share').textContent = 'Sharing location - tap to stop';
+    try { localStorage.setItem('carhud.share', '1'); } catch (e) { /* private */ }
+  }
+  function stopShare() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null;
+    if (wake) { wake.release(); wake = null; }
+    $('#share').classList.remove('on'); $('#share').textContent = 'Share location with the HUD';
+    try { localStorage.removeItem('carhud.share'); } catch (e) { /* private */ }
+  }
+  $('#share').onclick = () => (watchId === null ? startShare() : stopShare());
+  document.addEventListener('visibilitychange', async () => { if (!document.hidden && watchId !== null && !wake) { try { wake = await navigator.wakeLock.request('screen'); } catch (e) { /* */ } } });
+  try { if (localStorage.getItem('carhud.share') === '1' && window.isSecureContext) startShare(); } catch (e) { /* private */ }
+
+  /* ---------- destinations ---------- */
+  const recent = (() => { try { return JSON.parse(localStorage.getItem('carhud.recent') || '[]'); } catch (e) { return []; } })();
+  function showRecent() {
+    const box = $('#recent'); box.innerHTML = '';
+    recent.slice(0, 6).forEach((r) => box.append(h('button', { onclick: () => go(r) }, r.name.split(',')[0])));
+  }
+  showRecent();
+  let searchTimer = null;
+  $('#q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 600); });
+  $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(searchTimer); search(); } });
+  async function search() {
+    const q = $('#q').value.trim(), box = $('#results');
+    if (q.length < 3) { box.innerHTML = ''; return; }
+    let url = cfg.geocoder + '/search?format=jsonv2&limit=6&addressdetails=0&q=' + encodeURIComponent(q);
+    if (lastFix) url += '&viewbox=' + [lastFix.lon - 0.6, lastFix.lat + 0.4, lastFix.lon + 0.6, lastFix.lat - 0.4].join(',');
+    try {
+      const r = await (await fetch(url)).json();
+      box.innerHTML = '';
+      if (!r.length) box.append(h('div', { class: 'muted' }, 'Nothing found.'));
+      r.forEach((p) => {
+        const [name, ...rest] = p.display_name.split(', ');
+        box.append(h('div', { class: 'res', onclick: () => go({ name: p.display_name, lat: Number(p.lat), lon: Number(p.lon) }) }, h('b', {}, name), h('span', {}, rest.slice(0, 3).join(', '))));
+      });
+      $('#navNote').textContent = '';
+    } catch (e) {
+      $('#navNote').textContent = 'Search needs the phone\'s mobile data (' + e.message + ').';
+    }
+  }
+
+  /* ---------- routes: the phone asks OSRM, the Pi follows ---------- */
+  async function go(dest) {
+    if (!lastFix) { $('#navNote').textContent = 'Share your location first, so the route can start where you are.'; return; }
+    const i = recent.findIndex((r) => r.name === dest.name); if (i >= 0) recent.splice(i, 1);
+    recent.unshift(dest); recent.length = Math.min(recent.length, 10);
+    try { localStorage.setItem('carhud.recent', JSON.stringify(recent)); } catch (e) { /* private */ }
+    $('#navNote').textContent = 'Finding a route...';
+    try {
+      const url = cfg.router + '/route/v1/driving/' + lastFix.lon + ',' + lastFix.lat + ';' + dest.lon + ',' + dest.lat + '?overview=full&geometries=geojson&steps=true';
+      const r = await (await fetch(url)).json();
+      if (r.code !== 'Ok' || !r.routes || !r.routes.length) throw new Error(r.message || r.code || 'no route');
+      const rt = r.routes[0];
+      const steps = rt.legs[0].steps.map((s) => {
+        const st = { type: s.maneuver.type, modifier: s.maneuver.modifier || '', name: s.name || s.ref || '', distance: Math.round(s.distance), duration: s.duration,
+          location: s.maneuver.location, exit: s.maneuver.exit, bearing: s.maneuver.bearing_after };
+        st.text = NavIcon.text(st);
+        return st;
+      });
+      await api('/api/phone/route', { route: { dest: { name: dest.name.split(',')[0], lat: dest.lat, lon: dest.lon }, coords: rt.geometry.coordinates, distance: rt.distance, duration: rt.duration, steps } });
+      $('#navNote').textContent = ''; $('#results').innerHTML = ''; $('#q').value = ''; showRecent();
+      rerouteAt = Date.now();
+    } catch (e) {
+      // no route service: head straight for it, the Pi still shows distance
+      $('#navNote').textContent = 'Route service unreachable (' + e.message + '): showing the straight line.';
+      await api('/api/phone/route', { route: { dest: { name: dest.name.split(',')[0], lat: dest.lat, lon: dest.lon }, coords: [[lastFix.lon, lastFix.lat], [dest.lon, dest.lat]],
+        steps: [{ type: 'arrive', modifier: '', name: dest.name.split(',')[0], location: [dest.lon, dest.lat], text: 'Head to ' + dest.name.split(',')[0] }] } });
+    }
+  }
+  $('#end').onclick = () => api('/api/phone/route/clear', {});
+  $('#again').onclick = () => { if (recent[0]) go(recent[0]); };
+
+  function renderNav() {
+    const active = nav && nav.active;
+    $('#navActive').classList.toggle('hidden', !active);
+    $('#navIdle').classList.toggle('hidden', !!active);
+    if (!active) return;
+    const c = $('#arrow').getContext('2d'); c.clearRect(0, 0, 152, 152);
+    NavIcon.draw(c, 0, 0, 152, nav.arrived ? { type: 'arrive' } : nav.next, '#ff8a2a');
+    $('#tDist').textContent = nav.arrived ? 'Arrived' : nav.next ? NavIcon.dist(nav.next.distance) : '';
+    $('#tText').textContent = nav.next && !nav.arrived ? nav.next.text || NavIcon.text(nav.next) : nav.dest || '';
+    $('#tLeft').textContent = nav.left !== undefined ? NavIcon.dist(nav.left) + ' left' + (nav.eta ? ' · arrive ' + new Date(nav.eta).toTimeString().slice(0, 5) : '') : '';
+    $('#reroute').classList.toggle('hidden', !nav.offRoute);
+    if (nav.offRoute && Date.now() - rerouteAt > 15000 && recent[0]) { rerouteAt = Date.now(); go(recent[0]); }
+  }
+})();
+</script>
+</body>
+</html>

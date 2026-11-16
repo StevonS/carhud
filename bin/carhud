@@ -26,6 +26,11 @@ const HELP = `carhud: control the car HUD
   carhud settings               the HUD app's settings and their current values
   carhud setting <key> <value>  change one, e.g. carhud setting redline 6500
   carhud obd                    adapter, protocol and every PID reading
+  carhud phone                  Bluetooth phone, music, notifications, GPS and route
+  carhud pair                   let a new phone pair for 3 minutes (confirm the code on the desk)
+  carhud play|pause|next|prev   the phone's music
+  carhud wifi [hotspot|home]    Wi-Fi status, or switch to the car hotspot / back to home Wi-Fi
+  carhud nav test [kmh]|stop|end   a test route where you are and a pretend drive along it
   carhud watch                  live values, refreshed (Ctrl+C to stop)
   carhud log [-f]               the server log (-f: keep following)
   carhud restart [--rebuild]    restart the HUD app (--rebuild: rebuild it first)
@@ -145,6 +150,53 @@ async function main() {
                 fresh.forEach((e) => console.log(new Date(e.time).toTimeString().slice(0, 8) + ' ' + pad(e.level, 5) + ' ' + e.text));
                 if (fresh.length) last = fresh[fresh.length - 1].time;
             }
+        }
+        case 'phone': {
+            const p = await get('/api/phone'), bt = p.bt || {}, d = (bt.devices || []).find((x) => x.connected);
+            console.log('Bluetooth: ' + (!bt.available ? 'not running (see carhud log)' : !bt.adapter ? 'no adapter' : 'on as "' + bt.adapter.name + '"' + (bt.adapter.discoverable ? ', visible to phones' : '')));
+            (bt.devices || []).forEach((x) => console.log('  ' + (x.connected ? '● ' : '○ ') + x.name + '  ' + x.address + (x.battery !== null && x.battery !== undefined ? '  battery ' + x.battery + '%' : '') + (x.notifications ? '  notifications' : '')));
+            if (!d) console.log('  no phone connected');
+            const m = bt.media;
+            if (m && m.title) console.log('playing:   ' + m.title + (m.artist ? ' · ' + m.artist : '') + ' (' + m.status + (m.app ? ', ' + m.app : '') + ')');
+            if (p.notifications.length) console.log('notices:   ' + p.notifications.slice(0, 3).map((x) => (x.appName || '') + ': ' + (x.title || '')).join(' | '));
+            const g = p.gps;
+            console.log('GPS:       ' + (g ? (g.fresh ? (g.sim ? 'simulated, ' : 'from the phone, ') : 'stopped ' + Math.round(g.age / 1000) + ' s ago, ') + Math.round(g.speed || 0) + ' km/h' : 'no phone sharing location'));
+            const n = p.nav && p.nav.progress;
+            console.log('route:     ' + (p.nav ? (p.nav.dest && p.nav.dest.name) + (n ? ', ' + n.left + ' m left' + (n.next ? ', next: ' + (n.next.text || n.next.type) + ' in ' + n.next.distance + ' m' : '') : '') : 'none'));
+            const c = p.config || {};
+            console.log('phone app: https://' + c.hostname + '.local:' + c.httpsPort + '/phone/   (setup: http://' + c.hostname + '.local:' + c.httpPort + '/phone/setup.html)');
+            return;
+        }
+        case 'pair': { const r = await post('/api/phone/discoverable', { on: true, seconds: 180 }); console.log(r.error ? r.error : 'visible to phones for 3 minutes: pick "CarHUD" in the phone\'s Bluetooth settings, then confirm the code on the desk screen'); return; }
+        case 'play': case 'pause': case 'next': case 'prev': { await post('/api/phone/media', { action: cmd === 'prev' ? 'previous' : cmd }); console.log(cmd); return; }
+        case 'wifi': {
+            if (args[0] === 'hotspot' || args[0] === 'home') {
+                const r = spawnSync('sudo', ['nmcli', 'connection', args[0] === 'hotspot' ? 'up' : 'down', 'carhud-ap'], { stdio: 'inherit' });
+                process.exit(r.status || 0);
+            }
+            const s = await get('/api/system'), c = await get('/api/phone/config');
+            console.log('Wi-Fi: ' + (!s.wifi ? 'unknown (no NetworkManager?)' : s.wifi.hotspot ? 'hotspot on' : (s.wifi.connection || 'not connected')));
+            console.log('hotspot: "' + c.apSsid + '" password ' + (c.apPassword || '(not set)') + ', mode ' + c.ap + ' (PHONE_AP)');
+            console.log('switch: carhud wifi hotspot | carhud wifi home');
+            return;
+        }
+        case 'nav': {
+            if (args[0] === 'end') { await post('/api/phone/route/clear'); console.log('route ended'); return; }
+            if (args[0] === 'stop') { await post('/api/phone/simulate', { speed: 0 }); console.log('test drive stopped'); return; }
+            if (args[0] === 'test') {
+                const p = await get('/api/phone'), g = p.gps, lat = g ? g.lat : 43.3616, lon = g ? g.lon : -80.3144;
+                const dLat = 400 / 111320, dLon = 400 / (111320 * Math.cos(lat * Math.PI / 180));
+                const c = [[lon, lat], [lon, lat + dLat], [lon + dLon, lat + dLat], [lon + dLon, lat], [lon, lat]];
+                const names = ['Test Ave', 'First St', 'Second St', 'Third St'];
+                const steps = [{ type: 'depart', modifier: '', name: names[0], location: c[0], text: 'Head north on Test Ave' }]
+                    .concat([1, 2, 3].map((i) => ({ type: 'turn', modifier: 'right', name: names[i], location: c[i], distance: 400, text: 'Turn right onto ' + names[i] })))
+                    .concat([{ type: 'arrive', modifier: '', name: '', location: c[4], text: 'Arrive at your destination' }]);
+                await post('/api/phone/route', { route: { dest: { name: 'Test loop', lat, lon }, coords: c, steps, distance: 1600, duration: 120 } });
+                await post('/api/phone/simulate', { speed: Number(args[1]) || 60 });
+                console.log('test loop of 1.6 km, driving it at ' + (Number(args[1]) || 60) + ' km/h (carhud nav stop / carhud nav end)');
+                return;
+            }
+            throw new Error('carhud nav test [kmh] | stop | end');
         }
         case 'restart': { await post('/api/app/restart', { rebuild: args[0] === '--rebuild' }); console.log('restarting the HUD app' + (args[0] === '--rebuild' ? ' (rebuilding)' : '')); return; }
         case 'reload': { await post('/api/displays/reload'); console.log('screens reloading'); return; }

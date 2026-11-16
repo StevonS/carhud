@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phone</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { height: 100vh; overflow: auto; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; align-content: start; }
+  @media (max-width: 700px) { body { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .np-title { font-size: 22px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .np-sub { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar { height: 6px; background: var(--panel2); border-radius: 3px; margin: 12px 0 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ctl { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+  .ctl button { font-size: 24px; width: 70px; height: 54px; padding: 0; }
+  .ctl #pp { background: var(--accent); color: #111; border-color: var(--accent); width: 90px; }
+  .vol { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--dim); }
+  .dev { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .dev .n { flex: 1; min-width: 70px; } .dev .n b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dev button { padding: 6px 10px; font-size: 13px; }
+  .note-item { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .note-item .app { font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; }
+  .note-item .t { font-weight: 600; } .note-item .m { color: var(--dim); font-size: 13px; }
+  .note-item .acts { display: flex; gap: 8px; margin-top: 6px; }
+  .big-btn { width: 100%; padding: 14px; font-size: 16px; }
+  .empty { color: var(--dim); font-size: 13px; padding: 6px 0; }
+  .kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .kv span { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="col">
+  <section class="card" id="npCard">
+    <h2>Now playing <span class="grow"></span><span id="npApp" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="np-title" id="npTitle">Nothing playing</div>
+    <div class="np-sub" id="npSub">Play music on your phone; it comes out of the car through Bluetooth.</div>
+    <div class="bar"><i id="npBar"></i></div>
+    <div class="times"><span id="npPos"></span><span id="npDur"></span></div>
+    <div class="ctl"><button data-a="previous">⏮</button><button id="pp" data-a="toggle">▶</button><button data-a="next">⏭</button></div>
+    <div class="vol"><span>🔈</span><input type="range" id="vol" min="0" max="127" class="grow"><span>🔊</span></div>
+  </section>
+  <section class="card">
+    <h2>Notifications <span class="grow"></span><button id="clear" style="text-transform:none;padding:3px 9px;font-size:12px">Clear</button></h2>
+    <div id="notes"><div class="empty">iPhone notifications show here once the phone is paired and "Share System Notifications" is on for CarHUD (Settings → Bluetooth → ⓘ).</div></div>
+  </section>
+</div>
+<div class="col">
+  <section class="card">
+    <h2>Phone</h2>
+    <div id="phones"></div>
+    <button class="big-btn primary" id="pair" style="margin-top:10px">Pair a phone</button>
+    <div class="note" id="pairNote"></div>
+  </section>
+  <section class="card">
+    <h2>Phone app (location &amp; navigation)</h2>
+    <div class="kv" id="appInfo"></div>
+    <div class="note">On the phone, join the Wi-Fi above, then open the setup address once.</div>
+  </section>
+</div>
+<script src="/js/carhud.js"></script>
+<script>
+(function () {
+  const { api, connect, $, h } = CarHud;
+  let ph = null, media = null, dragVol = false;
+  const mm = (ms) => (ms === null || ms === undefined || !isFinite(ms) ? '' : Math.floor(ms / 60000) + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0'));
+
+  document.querySelectorAll('.ctl button').forEach((b) => { b.onclick = () => api('/api/phone/media', { action: b.dataset.a }); });
+  $('#vol').oninput = () => { dragVol = true; };
+  $('#vol').onchange = () => { api('/api/phone/volume', { value: Number($('#vol').value) }); dragVol = false; };
+  $('#clear').onclick = () => api('/api/phone/notifications/clear', {});
+  $('#pair').onclick = () => api('/api/phone/discoverable', { on: true, seconds: 180 });
+
+  api('/api/phone/config').then((c) => {
+    const box = $('#appInfo');
+    const setup = 'http://' + (c.ap === 'off' ? c.hostname + '.local' : '10.42.0.1') + ':' + c.httpPort + '/phone/setup.html';
+    [['Wi-Fi', c.ap === 'off' ? 'hotspot off' : c.apSsid], ['Password', c.ap === 'off' ? '--' : (c.apPassword || '(see /etc/carhud.conf)')], ['Setup', setup],
+     ['At home', 'http://' + c.hostname + '.local:' + c.httpPort + '/phone/setup.html']].forEach(([k, v]) => box.append(h('span', {}, k), h('span', { class: 'mono' }, v)));
+  });
+
+  function render() {
+    if (!ph) return;
+    const bt = ph.bt || {};
+    /* phones */
+    const box = $('#phones'); box.innerHTML = '';
+    if (!bt.available) box.append(h('div', { class: 'empty' }, 'Bluetooth is not running on the Pi (see the log in the control panel).'));
+    else if (!bt.adapter) box.append(h('div', { class: 'empty' }, 'No Bluetooth adapter found.'));
+    else if (!bt.devices.length) box.append(h('div', { class: 'empty' }, 'No phone paired yet.'));
+    bt.devices.forEach((d) => box.append(h('div', { class: 'dev' },
+      h('span', { class: 'pill ' + (d.connected ? 'ok' : '') }, d.connected ? 'connected' : 'paired'),
+      h('span', { class: 'n' }, h('b', {}, d.name || d.address), h('span', { class: 'muted', style: 'font-size:12px' }, (d.battery !== null && d.battery !== undefined ? 'battery ' + d.battery + '% · ' : '') + (d.notifications ? 'notifications on' : d.address))),
+      d.connected ? h('button', { onclick: () => api('/api/phone/disconnect', { address: d.address }) }, 'Disconnect') : h('button', { onclick: () => api('/api/phone/connect', { address: d.address }) }, 'Connect'),
+      h('button', { class: 'danger', onclick: () => { if (confirm('Forget ' + (d.name || d.address) + '?')) api('/api/phone/forget', { address: d.address }); } }, 'Forget'))));
+    const a = bt.adapter;
+    $('#pair').textContent = a && a.discoverable ? 'Visible as "' + a.name + '"' : 'Pair a phone';
+    $('#pairNote').textContent = a && a.discoverable ? 'On the phone: Settings → Bluetooth → ' + a.name + '. Confirm the code here when it asks.' : '';
+    /* now playing */
+    media = bt.media;
+    if (media && media.title) {
+      $('#npTitle').textContent = media.title;
+      $('#npSub').textContent = [media.artist, media.album].filter(Boolean).join(' · ');
+      $('#npApp').textContent = media.app || '';
+    } else { $('#npTitle').textContent = 'Nothing playing'; $('#npApp').textContent = ''; }
+    $('#pp').textContent = media && media.status === 'playing' ? '⏸' : '▶';
+    if (!dragVol && bt.volume !== null && bt.volume !== undefined) $('#vol').value = bt.volume;
+    /* notifications */
+    const nb = $('#notes');
+    if (ph.notifications.length) {
+      nb.innerHTML = '';
+      ph.notifications.forEach((n) => nb.append(h('div', { class: 'note-item' },
+        h('div', { class: 'app' }, n.appName || n.category), h('div', { class: 't' }, n.title || ''), n.message ? h('div', { class: 'm' }, n.message) : '',
+        n.positive || n.negative ? h('div', { class: 'acts' },
+          n.positive ? h('button', { class: 'primary', onclick: () => api('/api/phone/notification', { uid: n.uid, positive: true }) }, n.positive) : '',
+          n.negative ? h('button', { onclick: () => api('/api/phone/notification', { uid: n.uid, positive: false }) }, n.negative) : '') : '')));
+    }
+    tick();
+  }
+  function tick() {
+    if (!media || !media.duration) { $('#npBar').style.width = '0'; $('#npPos').textContent = ''; $('#npDur').textContent = ''; return; }
+    const pos = Math.min(media.duration, (media.position || 0) + (media.status === 'playing' ? Date.now() - media.positionAt : 0));
+    $('#npBar').style.width = (pos / media.duration * 100) + '%';
+    $('#npPos').textContent = mm(pos); $('#npDur').textContent = mm(media.duration);
+  }
+  setInterval(tick, 500);
+  connect({}, { message: (m) => { if (m.t === 'phone') { ph = m.phone; render(); } } });
+})();
+</script>
+</body>
+</html>

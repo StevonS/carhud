@@ -19,6 +19,8 @@ const { Streamer } = require('./stream');
 const { Eva } = require('./eva');
 const { Elm327 } = require('./obd/elm327');
 const { Derive } = require('./obd/derive');
+const https = require('https');
+const { Phone } = require('./phone');
 
 const cfg = config.load();
 const ROOT = cfg.ROOT;
@@ -59,7 +61,7 @@ let saved = {};
 try { saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (e) { /* first run */ }
 const state = {
     source: 'demo',
-    auto: cfg.HUD_SOURCE === 'auto' || !['demo', 'manual', 'obd'].includes(cfg.HUD_SOURCE),
+    auto: cfg.HUD_SOURCE === 'auto' || !['demo', 'manual', 'obd', 'gps'].includes(cfg.HUD_SOURCE),
     manual: Object.assign({}, MANUAL_DEFAULTS, saved.manual || {}),
     drive: saved.drive === undefined ? null : saved.drive,
 };
@@ -86,11 +88,19 @@ const derive = new Derive(cfg);
 let obdHud = {};
 let lastObdPush = 0;
 obd.on('log', log);
+/** Auto: the car over OBD when the adapter answers, else the phone's GPS while it's sharing, else the demo. */
+function autoPick() {
+    if (obd.state === 'live' || obd.state === 'waiting') return 'obd';
+    if (phone.gpsFresh()) return 'gps';          // the phone sharing its GPS (or the route simulator)
+    return 'demo';
+}
+function reconsider(why) {
+    if (!state.auto) return;
+    const want = autoPick();
+    if (want !== state.source) { log('info', 'source auto: ' + want + ' (' + why + ')'); setSource(want, true); }
+}
 obd.on('state', (s) => {
-    if (state.auto) {
-        const want = s === 'live' || s === 'waiting' ? 'obd' : 'demo';
-        if (want !== state.source) { log('info', 'source auto: ' + want + ' (adapter ' + s + ')'); setSource(want, true); }
-    }
+    reconsider('adapter ' + s);
     if (s !== 'live') { obdHud = {}; if (state.source === 'obd') applySource(); }
     broadcastState();
 });
@@ -100,10 +110,39 @@ obd.on('data', (v) => {
     if (state.source === 'obd' && now - lastObdPush >= 50) { lastObdPush = now; applySource(); }
 });
 
+/* ---------- the phone: Bluetooth + the phone web app ---------- */
+const phone = new Phone(cfg);
+let lastGpsPush = 0, lastNavSent = '';
+phone.on('log', log);
+phone.on('change', (ps) => {
+    broadcast({ t: 'phone', phone: ps }, (c) => c.wantsData);
+    const nav = navMsg();
+    const key = JSON.stringify(nav);
+    if (key !== lastNavSent) { lastNavSent = key; broadcast(nav); }
+});
+phone.on('pair', (p) => { log('info', 'pairing: ' + p.name + ' shows ' + (p.passkey || '(no code)')); broadcast({ t: 'pair', pair: p }); });
+phone.on('notification', (n) => broadcast({ t: 'notification', n }, (c) => c.wantsData));
+phone.on('gps', () => {
+    reconsider('phone GPS');
+    const now = Date.now();
+    if (state.source === 'gps' && now - lastGpsPush >= 100) { lastGpsPush = now; applySource(); }
+});
+setInterval(() => { if (state.auto && state.source === 'gps' && !phone.gpsFresh()) reconsider('phone GPS stopped'); }, 1000);
+/** the small navigation message every screen gets (the HUD draws the next turn from it) */
+function navMsg() {
+    const n = phone.nav.route ? phone.nav.state() : null;
+    if (!n || !n.progress) return { t: 'nav', active: !!n, show: cfg.on('HUD_NAV') };
+    const p = n.progress;
+    return { t: 'nav', active: true, show: cfg.on('HUD_NAV'), dest: n.dest && n.dest.name, left: p.left, eta: p.eta, arrived: p.arrived, offRoute: p.offRoute,
+        next: p.next && { index: p.next.index, type: p.next.type, modifier: p.next.modifier, name: p.next.name, distance: p.next.distance, text: p.next.text, exit: p.next.exit } };
+}
+function routeMsg() { const n = phone.nav.state(); return { t: 'route', route: n && { dest: n.dest, coords: n.coords, steps: n.steps, distance: n.distance, duration: n.duration } }; }
+
 /* ---------- sources ---------- */
 function applySource() {
     if (state.source === 'demo') eva.setSignals('demo');
     else if (state.source === 'manual') eva.setSignals('manual', state.manual);
+    else if (state.source === 'gps') eva.setSignals('manual', phone.hudValues());
     else {
         // the car: what it gives; standing still with the engine off until it answers
         const v = Object.assign({ rpm: 0, speed: 0, gear: 0 }, obd.state === 'live' ? obdHud : {});
@@ -111,9 +150,9 @@ function applySource() {
     }
 }
 function setSource(src, fromAuto) {
-    if (src === 'auto') { state.auto = true; src = obd.state === 'live' || obd.state === 'waiting' ? 'obd' : 'demo'; }
+    if (src === 'auto') { state.auto = true; src = autoPick(); }
     else if (!fromAuto) state.auto = false;
-    if (!['demo', 'manual', 'obd'].includes(src)) return false;
+    if (!['demo', 'manual', 'obd', 'gps'].includes(src)) return false;
     state.source = src;
     applySource();
     broadcastState();
@@ -123,7 +162,7 @@ function setSource(src, fromAuto) {
 function stateMsg() {
     return {
         t: 'state', build: BUILD, version: VERSION, source: state.source, auto: state.auto, app: eva.state, drive: state.drive,
-        manual: state.manual, obd: { state: obd.state, detail: obd.detail }, gearRatios: derive.ratios, gearRatiosSet: derive.ratiosConfigured,
+        manual: state.manual, obd: { state: obd.state, detail: obd.detail }, gps: phone.gpsFresh(), gearRatios: derive.ratios, gearRatiosSet: derive.ratiosConfigured,
     };
 }
 function broadcastState() { broadcast(stateMsg()); }
@@ -223,12 +262,21 @@ function systemInfo(cb) {
         hostname: os.hostname(), ips, port: cfg.port, version: VERSION, commit: gitHead(ROOT), evaCommit: evaRef, node: process.version,
         uptime: os.uptime(), load: os.loadavg(), memTotal: os.totalmem(), memFree: os.freemem(), temp, throttled: null, config: cfg.file,
     };
+    execFile('nmcli', ['-t', '-f', 'NAME,TYPE,DEVICE', 'connection', 'show', '--active'], { timeout: 3000 }, (e2, out2) => {
+        if (!e2) {
+            const w = String(out2).split('\n').map((l) => l.split(':')).find((f) => /wireless/.test(f[1] || ''));
+            info.wifi = w ? { connection: w[0], hotspot: w[0] === 'carhud-ap' } : { connection: null, hotspot: false };
+        }
+        sysDone();
+    });
+    let pending = 2;
+    const sysDone = () => { if (--pending === 0) cb(info); };
     execFile('vcgencmd', ['get_throttled'], { timeout: 2000 }, (err, out) => {
         if (!err) {
             const v = parseInt(String(out).split('=')[1], 16);
             if (isFinite(v)) info.throttled = { raw: '0x' + v.toString(16), underVoltageNow: !!(v & 1), throttledNow: !!(v & 4), underVoltageSinceBoot: !!(v & 0x10000), throttledSinceBoot: !!(v & 0x40000) };
         }
-        cb(info);
+        sysDone();
     });
 }
 
@@ -279,12 +327,47 @@ const routes = {
     },
     'POST /api/app/restart': async (req, res) => { const b = await body(req); json(res, 200, { ok: true }); eva.restart(b.rebuild ? 'rebuild requested' : 'restart requested', !!b.rebuild); },
     'POST /api/obd/reconnect': (req, res) => { obd.reconnect(); json(res, 200, { ok: true }); },
+    'GET /api/phone': (req, res) => json(res, 200, Object.assign(phone.state(), { route: routeMsg().route, config: phoneConfig() })),
+    'POST /api/phone/discoverable': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'discoverable', on: b.on !== false, seconds: Number(b.seconds) || 180 }) ? 200 : 503, {}); },
+    'POST /api/phone/pair': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'pair-reply', accept: !!b.accept }) ? 200 : 503, {}); },
+    'POST /api/phone/media': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'media', action: String(b.action) }) ? 200 : 503, {}); },
+    'POST /api/phone/volume': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'volume', value: Number(b.value) }) ? 200 : 503, {}); },
+    'POST /api/phone/connect': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'connect', address: b.address }) ? 200 : 503, {}); },
+    'POST /api/phone/disconnect': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'disconnect', address: b.address }) ? 200 : 503, {}); },
+    'POST /api/phone/forget': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'forget', address: b.address }) ? 200 : 503, {}); },
+    'POST /api/phone/notification': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'notif-action', uid: b.uid, positive: !!b.positive }) ? 200 : 503, {}); },
+    'POST /api/phone/notifications/clear': (req, res) => { phone.notifications = []; phone.changed(); json(res, 200, {}); },
+    'POST /api/phone/gps': async (req, res) => { const b = await body(req); json(res, phone.fix(b) ? 200 : 400, {}); },
+    'POST /api/phone/route': async (req, res) => {
+        const b = await body(req);
+        try { phone.setRoute(b.route); broadcast(routeMsg(), (c) => c.wantsData); json(res, 200, { ok: true }); } catch (e) { json(res, 400, { error: e.message }); }
+    },
+    'POST /api/phone/route/clear': (req, res) => { phone.clearRoute(); broadcast(routeMsg(), (c) => c.wantsData); json(res, 200, {}); },
+    'POST /api/phone/simulate': async (req, res) => { const b = await body(req); json(res, 200, { simulating: phone.simulate(b.speed) }); },
+    'GET /api/phone/config': (req, res) => json(res, 200, phoneConfig()),
+    /* testing without a phone: a pretend notification (or call) on the desk */
+    'POST /api/phone/test-notification': async (req, res) => {
+        const b = await body(req), call = b.call === true, uid = 900000 + Math.floor(Math.random() * 99999);
+        setTimeout(() => phone._msg({ t: 'notification-removed', uid }), 20000);
+        phone._msg({ t: 'notification', uid, category: call ? 'incoming-call' : 'social',
+            appName: call ? 'Phone' : 'Messages', app: 'test', title: call ? 'Test caller' : 'Test message', message: call ? 'Incoming call' : 'This is how a notification looks on the desk.',
+            positive: call ? 'Answer' : '', negative: call ? 'Decline' : '', hasPositive: call, hasNegative: call, preexisting: false, silent: false });
+        json(res, 200, {});
+    },
     'POST /api/displays/reload': (req, res) => { broadcast({ t: 'reload' }); displays.forEach((d) => d.send({ t: 'reload' })); json(res, 200, { ok: true }); },
     'POST /api/system/screens': (req, res) => {
         runDetached('carhud-screens', [], { DISPLAY: ':0', XAUTHORITY: path.join(os.homedir(), '.Xauthority') });
         json(res, 200, { ok: true });
     },
     'POST /api/system/restart': (req, res) => { json(res, 200, { ok: true }); setTimeout(() => runDetached('sudo', ['-n', 'systemctl', 'restart', 'carhud']), 200); },
+    'POST /api/system/wifi': async (req, res) => {
+        const b = await body(req);
+        // hotspot on now, or off (the Pi then joins a known Wi-Fi network by itself)
+        const args = b.mode === 'ap' ? ['-n', 'nmcli', 'connection', 'up', 'carhud-ap'] : ['-n', 'nmcli', 'connection', 'down', 'carhud-ap'];
+        json(res, 200, { ok: true });
+        setTimeout(() => runDetached('sudo', args), 300);
+        log('info', 'Wi-Fi: ' + (b.mode === 'ap' ? 'switching to the hotspot' : 'leaving the hotspot'));
+    },
     'POST /api/system/reboot': (req, res) => { json(res, 200, { ok: true }); setTimeout(() => runDetached('sudo', ['-n', 'systemctl', 'reboot']), 500); },
     'POST /api/system/update': (req, res) => {
         fs.writeFileSync(UPDATE_LOG, 'Starting update...\n');
@@ -295,9 +378,14 @@ const routes = {
     },
 };
 const SYSTEM_ACTIONS = /^POST \/api\/system\//;
+function phoneConfig() {
+    return { name: cfg.PHONE_NAME, httpsPort: tlsOk ? Number(cfg.PHONE_HTTPS_PORT) : null, httpPort: cfg.port,
+        geocoder: cfg.PHONE_GEOCODER_URL, router: cfg.PHONE_ROUTER_URL, hostname: os.hostname(),
+        ap: cfg.PHONE_AP, apSsid: cfg.PHONE_AP_SSID, apPassword: cfg.PHONE_AP_PASSWORD };
+}
 
 const displays = new Set();
-const server = http.createServer(async (req, res) => {
+const handler = async (req, res) => {
     if (!cfg.on('ALLOW_LAN') && !isLocal(req)) { res.writeHead(403); return res.end('LAN access is off (ALLOW_LAN=0)'); }
     const url = req.url.split('?')[0];
     const key = req.method + ' ' + url;
@@ -312,6 +400,11 @@ const server = http.createServer(async (req, res) => {
         if (url === '/favicon.ico') { res.writeHead(301, { location: '/favicon.svg' }); return res.end(); }
         if (url === '/') return sendFile(req, res, path.join(ROOT, 'web', 'index.html'));
         if (url === '/hud') return sendFile(req, res, path.join(ROOT, 'web', 'hud.html'));
+        if (url === '/phone') { res.writeHead(302, { location: '/phone/' }); return res.end(); }
+        if (url === '/phone/carhud-ca.crt') {
+            res.setHeader('content-disposition', 'attachment; filename="carhud-ca.crt"');
+            return fs.readFile(path.join(cfg.PHONE_TLS_DIR, 'ca.crt'), (e, b) => { if (e) { res.writeHead(404); return res.end('no certificate yet: run the installer'); } res.writeHead(200, { 'content-type': 'application/x-x509-ca-cert' }); res.end(b); });
+        }
         if (url === '/desk' ) { res.writeHead(302, { location: '/desk/' }); return res.end(); }
         if (url === '/desk/') return sendFile(req, res, path.join(ROOT, 'desk', 'index.html'));
         const pick = (prefix, base) => url.startsWith(prefix) && safeJoin(base, url.slice(prefix.length));
@@ -325,9 +418,17 @@ const server = http.createServer(async (req, res) => {
         log('error', 'http ' + key + ': ' + e.message);
         if (!res.headersSent) json(res, 500, { error: e.message });
     }
-});
+};
+const server = http.createServer(handler);
+/* the phone web app is served over https too: browsers only give a page GPS on https */
+let tlsServer = null, tlsOk = false;
+try {
+    const key = fs.readFileSync(path.join(cfg.PHONE_TLS_DIR, 'server.key')), cert = fs.readFileSync(path.join(cfg.PHONE_TLS_DIR, 'server.crt'));
+    tlsServer = https.createServer({ key, cert }, handler);
+    tlsOk = true;
+} catch (e) { /* no certificate: http only */ }
 
-ws.attach(server, (u) => u.split('?')[0] === '/ws', (c, req) => {
+const onWs = (c, req) => {
     if (!cfg.on('ALLOW_LAN') && !isLocal(req)) return c.close();
     const q = new URL(req.url, 'http://x').searchParams;
     c.addr = req.socket.remoteAddress;
@@ -336,18 +437,27 @@ ws.attach(server, (u) => u.split('?')[0] === '/ws', (c, req) => {
     c.wantsLog = q.get('log') === '1';
     c.send({ t: 'hello', build: BUILD, version: VERSION, targets: TARGETS });
     c.send(stateMsg());
-    c.on('message', (m) => { if (m && m.t === 'ping') c.send({ t: 'pong', id: m.id, server: Date.now() }); });
+    c.on('message', (m) => {
+        if (!m) return;
+        if (m.t === 'ping') c.send({ t: 'pong', id: m.id, server: Date.now() });
+        else if (m.t === 'gps') phone.fix(m);
+    });
     dataClients.add(c);
     c.on('close', () => { dataClients.delete(c); displays.delete(c); });
     if (c.wantsData) {
         if (eva.settings) c.send(Object.assign({ t: 'settings' }, eva.settings));
         if (eva.status) c.send({ t: 'status', s: eva.status });
         c.send({ t: 'obd', snap: obd.snapshot() });
+        c.send({ t: 'phone', phone: phone.state() });
+        c.send(routeMsg());
     }
+    c.send(navMsg());
     if (c.wantsLog) logs.forEach((e) => c.send(e));
     const target = q.get('target');
     if (target && (TARGETS[target] || target === 'all')) { displays.add(c); streamer.add(c, target, Number(q.get('fps')) || 0); }
-});
+};
+ws.attach(server, (u) => u.split('?')[0] === '/ws', onWs);
+if (tlsServer) ws.attach(tlsServer, (u) => u.split('?')[0] === '/ws', onWs);
 
 /* ---------- start ---------- */
 renderer.listen(() => {
@@ -357,6 +467,11 @@ renderer.listen(() => {
         if (state.drive !== null) eva.setDrive(state.drive);
         eva.start();
         if (cfg.on('OBD_ENABLE')) obd.start(); else log('info', 'OBD off (OBD_ENABLE=0)');
+        phone.start();
+        if (tlsServer) {
+            tlsServer.on('error', (e) => log('warn', 'https server: ' + e.message));
+            tlsServer.listen(Number(cfg.PHONE_HTTPS_PORT), cfg.on('ALLOW_LAN') ? '0.0.0.0' : '127.0.0.1', () => log('info', 'phone app on https port ' + cfg.PHONE_HTTPS_PORT));
+        } else log('info', 'no certificate in ' + cfg.PHONE_TLS_DIR + ': the phone app runs on http only (no GPS)');
     });
 });
 server.on('error', (e) => { log('error', 'http server: ' + e.message); process.exit(1); });
@@ -364,6 +479,7 @@ server.on('error', (e) => { log('error', 'http server: ' + e.message); process.e
 async function shutdown() {
     log('info', 'stopping');
     obd.stop();
+    phone.stop();
     await eva.stop();
     renderer.close();
     process.exit(0);

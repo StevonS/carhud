@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CarHUD phone setup</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  body { padding: 16px; font-size: 16px; line-height: 1.5; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 22px; } h1 b { color: var(--accent); }
+  h2 { font-size: 17px; margin-top: 26px; }
+  ol { padding-left: 22px; } li { margin: 6px 0; }
+  a.btn { display: inline-block; background: var(--accent); color: #111; padding: 10px 16px; border-radius: 10px; text-decoration: none; font-weight: 600; margin: 6px 0; }
+  code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1><b>CAR</b>HUD on your phone</h1>
+<p>Do this once per phone. It lets the phone share its location with the HUD and plan routes.</p>
+
+<h2>1. Connect to the car</h2>
+<p>In the car, join the Wi-Fi network <b id="ssid">CarHUD</b> (the password is on the desk screen: System app). At home, the phone and the Pi just need to be on the same Wi-Fi.
+Phones keep using mobile data for the internet while on the car's Wi-Fi.</p>
+
+<h2>2. Trust the CarHUD certificate</h2>
+<p>Phones only share location with secure pages. The Pi makes its own certificate, and your phone needs to trust it once.</p>
+<a class="btn" href="/phone/carhud-ca.crt">Download the certificate</a>
+<p><b>iPhone:</b></p>
+<ol>
+  <li>Tap the button above, then <b>Allow</b>.</li>
+  <li>Open <b>Settings</b>, then tap <b>Profile Downloaded</b> near the top, then <b>Install</b>.</li>
+  <li>Go to <b>Settings → General → About → Certificate Trust Settings</b> and turn on <b>CarHUD</b>.</li>
+</ol>
+<p><b>Android:</b></p>
+<ol>
+  <li>Tap the button above.</li>
+  <li>Open <b>Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate</b> and pick <code>carhud-ca.crt</code>. (Wording varies by phone; search Settings for "certificate".)</li>
+</ol>
+
+<h2>3. Open the app</h2>
+<a class="btn" id="open" href="#">Open CarHUD</a>
+<p>Then add it to your home screen. On iPhone: Share → <b>Add to Home Screen</b>. On Android: ⋮ → <b>Add to Home screen</b>.
+Allow location when it asks.</p>
+
+<h2>Bluetooth</h2>
+<p>Separately, pair the phone in its Bluetooth settings: on the desk screen, open <b>Phone → Pair a phone</b>, pick <b id="bt">CarHUD</b> on your phone and confirm the same code on both. That handles music, now playing, and (on iPhone) notifications and calls.
+On iPhone, also turn on <b>Share System Notifications</b> for CarHUD under Settings → Bluetooth → ⓘ.</p>
+
+<script src="/js/carhud.js"></script>
+<script>
+  CarHud.api('/api/phone/config').then((c) => {
+    document.getElementById('open').href = c.httpsPort ? 'https://' + location.hostname + ':' + c.httpsPort + '/phone/' : '/phone/';
+    if (c.apSsid) document.getElementById('ssid').textContent = c.apSsid;
+    if (c.name) document.getElementById('bt').textContent = c.name;
+  });
+</script>
+</body>
+</html>
