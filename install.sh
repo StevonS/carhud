@@ -34,7 +34,7 @@ echo "CarHUD $VERSION: $MODE for user '$USER_NAME' from $DIR ($(date))"
 step "1/10  System packages"
 PKGS="xserver-xorg xinit x11-xserver-utils xinput lightdm lightdm-gtk-greeter openbox obconf tint2 pcmanfm lxterminal mousepad
 unclutter git curl ca-certificates nodejs python3 python3-pil fonts-dejavu-core fonts-noto-color-emoji openssh-server alsa-utils
-bluez python3-dbus python3-gi openssl avahi-daemon iw rfkill"
+bluez python3-dbus python3-gi openssl avahi-daemon iw rfkill xterm"
 export DEBIAN_FRONTEND=noninteractive
 if [ "$MODE" = install ] || changed packages "$PKGS"; then
     apt-get update
@@ -157,7 +157,7 @@ chown -R "$USER_NAME:$USER_NAME" "$EVA_DIR"
 # ---------------------------------------------------------------------------------------------
 step "6/10  Commands"
 chown -R "$USER_NAME:$USER_NAME" "$DIR"
-chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update" "$DIR/system/carhud-wifi" "$DIR/system/carhud-audio"
+chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update" "$DIR/system/carhud-wifi" "$DIR/system/carhud-audio" "$DIR/system/carhud-lcd"
 # v1 copied these in; v2 links them to this checkout so updates reach them
 rm -f /usr/local/bin/carhud-screens /usr/local/bin/carhud-mode
 ln -sf "$DIR/bin/carhud" /usr/local/bin/carhud
@@ -166,6 +166,11 @@ ln -sf "$DIR/system/carhud-mode" /usr/local/bin/carhud-mode
 ln -sf "$DIR/system/carhud-update" /usr/local/bin/carhud-update
 ln -sf "$DIR/system/carhud-wifi" /usr/local/bin/carhud-wifi
 ln -sf "$DIR/system/carhud-audio" /usr/local/bin/carhud-audio
+ln -sf "$DIR/system/carhud-lcd" /usr/local/bin/carhud-lcd
+# a header-pin LCD that's set up needs ffmpeg to get its picture (carhud lcd setup installs it too)
+if grep -qE '^LCD_MODEL=.+' /etc/carhud.conf 2>/dev/null && ! command -v ffmpeg >/dev/null; then
+    apt-get install -y --no-install-recommends ffmpeg || echo "WARNING: no ffmpeg: the 3.5\" LCD stays blank (sudo apt install ffmpeg)"
+fi
 
 step "7/10  Desk apps, music folder, USB rules"
 sudo -u "$USER_NAME" mkdir -p "$USER_APPS" "$MEDIA"

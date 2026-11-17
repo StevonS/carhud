@@ -1,6 +1,7 @@
-/* panels.js: the Screens and Audio controls, shared by the control panel and the desk's System app.
+/* panels.js: the Screens, Audio and LCD controls, shared by the control panel and the desk's System app.
  *   const sp = CarHudPanels.screens(boxElement);  sp.update(screensMessage)
  *   const ap = CarHudPanels.audio(boxElement);    (loads and refreshes itself)
+ *   const lp = CarHudPanels.lcd(boxElement);      (loads itself; lp.reload() after a screens message)
  * Needs carhud.js (and pairing.js for the little messages, if loaded).
  */
 (function () {
@@ -22,14 +23,14 @@
     function render() {
       list.innerHTML = '';
       if (!st) return;
-      if (!st.x) { list.append(h('div', { class: 'muted' }, 'No displays found: the Pi\'s desktop isn\'t running, or nothing is plugged in.')); return; }
+      if (!st.x && !st.outputs.length) { list.append(h('div', { class: 'muted' }, 'No displays found: the Pi\'s desktop isn\'t running, or nothing is plugged in.')); return; }
       if (!st.outputs.length) { list.append(h('div', { class: 'muted' }, 'No displays connected.')); return; }
       st.outputs.forEach((o) => {
         const a = st.assignments[o.name] || {};
         const sel = h('select', { onchange: () => set(o.name, { screen: sel.value }) });
         Object.entries(st.types).forEach(([k, v]) => { const op = h('option', { value: k }, v); if (k === a.screen) op.selected = true; sel.append(op); });
-        const rot = h('select', { title: 'Turn this display', onchange: () => set(o.name, { rotate: rot.value }) });
-        st.rotations.forEach((r) => { const op = h('option', { value: r }, r === 'normal' ? 'not turned' : 'turned ' + r); if (r === a.rotate) op.selected = true; rot.append(op); });
+        const rot = o.virtual ? h('span', { class: 'muted', style: 'font-size:12px' }, '3.5" LCD (' + (o.fb || '').replace('/dev/', '') + ')') : h('select', { title: 'Turn this display', onchange: () => set(o.name, { rotate: rot.value }) });
+        if (!o.virtual) st.rotations.forEach((r) => { const op = h('option', { value: r }, r === 'normal' ? 'not turned' : 'turned ' + r); if (r === a.rotate) op.selected = true; rot.append(op); });
         const opts = h('div', { class: 'row', style: 'margin-top:6px;font-size:13px' });
         if (a.screen === 'hud') {
           [['mirror', 'Mirror'], ['flip', 'Flip'], ['bmw', 'BMW speed zone']].forEach(([k, t]) => {
@@ -83,5 +84,48 @@
     return { reload: load };
   }
 
-  window.CarHudPanels = { screens, audio };
+  function lcd(box) {
+    const status = h('div', { class: 'status' }, '...');
+    const model = h('select', { style: 'max-width:100%;min-width:0;flex:1 1 220px' });
+    const rot = h('select');
+    [[90, 'landscape (90°)'], [270, 'landscape, upside down (270°)'], [0, 'portrait (0°)'], [180, 'portrait, upside down (180°)']].forEach(([v, t]) => rot.append(h('option', { value: v }, t)));
+    const setupBtn = h('button', { class: 'primary' }, 'Set up');
+    const rebootBtn = h('button', { class: 'danger', style: 'display:none', onclick: () => { if (confirm('Reboot the Pi now?')) api('/api/system/reboot', {}).then((r) => say(r.error || 'Rebooting...', r.error ? 'bad' : 'ok')); } }, 'Reboot now');
+    const tools = h('div', { class: 'row', style: 'margin-top:8px' },
+      h('button', { onclick: () => api('/api/lcd/test', {}).then((r) => say(r.result || 'done', /Could|not|isn/.test(r.result || '') ? 'bad' : 'ok')) }, 'Colour bars'),
+      h('button', { onclick: () => api('/api/lcd/calibrate', {}).then(() => say('Tap the crosses on the LCD', 'ok')) }, 'Calibrate touch'),
+      h('button', { onclick: () => api('/api/lcd/calibration/reset', {}).then(() => { say('Touch calibration reset', 'ok'); load(); }) }, 'Reset calibration'),
+      h('button', { class: 'danger', onclick: () => { if (confirm('Turn the LCD off (after a reboot)?')) api('/api/lcd/off', {}).then(done); } }, 'Turn off'));
+    box.append(status, h('div', { class: 'row' }, model, rot, setupBtn, rebootBtn), tools,
+      h('div', { class: 'note' }, 'The 3.5" touch screen that plugs onto the header pins. Most cheap ones are Waveshare (A) clones; if the picture stays white or garbled after the reboot, set up the next model. It shows the debug console; choose something else for "LCD" under Screens.'));
+    function done(r) {
+      if (r.error) return say(r.error, 'bad');
+      say((r.result || '').split('\n').slice(-1)[0] || 'done', 'ok');
+      rebootBtn.style.display = r.reboot ? '' : 'none';
+      render(r);
+    }
+    setupBtn.onclick = () => { setupBtn.disabled = true; say('Setting up the LCD (downloads its driver settings)...', 'ok'); api('/api/lcd/setup', { model: model.value, rotate: Number(rot.value) }).then((r) => { setupBtn.disabled = false; done(r); }); };
+    let modelsDone = false;
+    function render(s) {
+      if (!modelsDone && s.models) { Object.entries(s.models).forEach(([k, v]) => model.append(h('option', { value: k }, v))); modelsDone = true; }
+      if (s.model) model.value = s.model;
+      rot.value = String(s.rotate);
+      const parts = [];
+      if (!s.model && !s.fb) parts.push('Not set up.');
+      else {
+        if (s.model) parts.push((s.modelName || s.model) + ', ' + s.rotate + '°.');
+        parts.push(s.fb ? 'Working: ' + s.fb.dev + ' ' + s.fb.width + '×' + s.fb.height + '.' : 'Driver not loaded' + (s.model ? ' (reboot after setting up).' : '.'));
+        if (s.fb) parts.push(s.touch ? 'Touch found' + (s.calibrated ? ', calibrated.' : '.') : 'No touch found.');
+        if (s.fb && s.screen) parts.push('Shows: ' + s.screen + '.');
+      }
+      status.textContent = parts.join(' ');
+      status.style.color = s.fb ? 'var(--ok)' : s.model ? 'var(--warn)' : '';
+      tools.style.display = s.fb ? '' : 'none';
+    }
+    const load = () => api('/api/lcd').then(render).catch(() => {});
+    load();
+    return { reload: load };
+  }
+
+  window.CarHudPanels = { screens, audio, lcd };
 })();

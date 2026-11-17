@@ -83,13 +83,14 @@
     else if (m.t === 'stats') renderStreams(m);
     else if (m.t === 'phone') { phoneSt = m.phone; renderPhone(); CarHudPair.handle(m); }
     else if (m.t === 'pair' || m.t === 'pair-done') CarHudPair.handle(m);
-    else if (m.t === 'screens') screensPanel.update(m);
+    else if (m.t === 'screens') { screensPanel.update(m); lcdPanel.reload(); }
     else if (m.t === 'nav') { navSt = m; renderPhone(); }
   }
 
   /* ---------- screens and sound ---------- */
   const screensPanel = CarHudPanels.screens($('#screensBox'));
   CarHudPanels.audio($('#audioBox'));
+  const lcdPanel = CarHudPanels.lcd($('#lcdBox'));
 
   /* ---------- phone & navigation ---------- */
   let phoneSt = null, navSt = null;

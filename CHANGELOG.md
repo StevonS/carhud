@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.0
+- 3.5" SPI touch LCD on the header pins (Waveshare 3.5" A/B/C and clones, MHS-3.5, "LCD35-show" boards):
+  `sudo carhud lcd setup <model>` and a reboot, or the control panel's 3.5" LCD card. It becomes a screen
+  called LCD, placed beside the other displays and copied to the LCD; touch is mapped to it, with a
+  5-tap calibration (`carhud lcd calibrate`). No vendor LCD-show scripts needed; leftovers from them are
+  pointed out.
+- Debug console: a compact touch screen for small displays (the LCD's default): status, address, Wi-Fi,
+  power, OBD, phone, live values, the log, and big buttons (source, hold, reconnect OBD, reload screens,
+  re-do layout, restart app, hotspot, pair, restart CarHUD, reboot). Any display can show it.
+- Terminal: a new screen type, a full-screen command line on any display.
+
 ## 2.3.0
 - Interchangeable screens: each display can show the HUD, the desk, the Console (control panel), Gauges,
   Navigation, Phone & music, black, any web address, the plain Desktop (for a terminal and debugging), or

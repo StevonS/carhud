@@ -22,6 +22,7 @@ const { Derive } = require('./obd/derive');
 const https = require('https');
 const { Phone } = require('./phone');
 const { Screens } = require('./screens');
+const { Lcd } = require('./lcd');
 
 const cfg = config.load();
 const ROOT = cfg.ROOT;
@@ -141,9 +142,36 @@ function navMsg() {
 function routeMsg() { const n = phone.nav.state(); return { t: 'route', route: n && { dest: n.dest, coords: n.coords, steps: n.steps, distance: n.distance, duration: n.duration } }; }
 
 /* ---------- screens: what each display shows ---------- */
-const screens = new Screens(cfg);
+const lcd = new Lcd(cfg);
+const screens = new Screens(cfg, lcd);
 screens.on('change', () => broadcast(screens.state()));
 const X_ENV = { DISPLAY: ':0', XAUTHORITY: path.join(os.homedir(), '.Xauthority') };
+
+/* ---------- the 3.5" SPI LCD on the header pins ---------- */
+/** point its touch layer at the LCD's part of the X screen (after a layout, or a new calibration) */
+function lcdTouch(cb) {
+    const m = lcd.matrix();
+    const done = (msg) => { if (msg) log('info', 'LCD touch: ' + msg); if (cb) cb(msg); };
+    if (!m) return done('');
+    const env = Object.assign({}, process.env, X_ENV);
+    execFile('xinput', ['list', '--name-only'], { env, timeout: 4000 }, (err, out) => {
+        if (err) return done('xinput not available');
+        const devs = String(out).split('\n').map((l) => l.trim()).filter((l) => /ADS7846|XPT2046/i.test(l));
+        if (!devs.length) return done('no ADS7846 touch device in X');
+        let left = devs.length;
+        devs.forEach((d) => execFile('xinput', ['set-prop', d, '--type=float', 'Coordinate Transformation Matrix', ...m.map(String)], { env, timeout: 4000 }, (e) => {
+            if (e) log('warn', 'LCD touch: ' + d + ': ' + String(e.message).split('\n')[0]);
+            if (--left === 0) done('mapped to ' + lcd.region.w + 'x' + lcd.region.h + '+' + lcd.region.x + '+' + lcd.region.y);
+        }));
+    });
+}
+function lcdInfo() { return Object.assign(lcd.state(), { screen: (screens.assignments().LCD || {}).screen || null }); }
+function lcdRoot(args, cb) {
+    execFile('sudo', ['-n', 'carhud-lcd', ...args], { timeout: 120000 }, (err, out, errOut) => {
+        const text = (String(out || '') + String(errOut || '')).trim();
+        cb(err ? (text || err.message) : null, text);
+    });
+}
 function relayout(why, only) {
     log('info', 'screens: ' + why);
     runDetached('carhud-screens', only ? ['--only', only] : [], X_ENV);
@@ -401,6 +429,40 @@ const routes = {
     },
     'POST /api/screens/identify': (req, res) => { broadcast({ t: 'identify', until: Date.now() + 5000 }); json(res, 200, {}); },
     'POST /api/screens/relayout': (req, res) => { relayout('layout requested'); json(res, 200, {}); },
+    'GET /api/lcd': (req, res) => json(res, 200, lcdInfo()),
+    /* carhud-screens tells where it put the LCD's area of the X screen: x y w h and the whole screen's size */
+    'POST /api/lcd/region': async (req, res) => {
+        const b = await body(req), r = {};
+        for (const k of ['x', 'y', 'w', 'h', 'sw', 'sh']) { r[k] = Number(b[k]); if (!isFinite(r[k]) || (k !== 'x' && k !== 'y' && r[k] <= 0)) return json(res, 400, { error: 'bad ' + k }); }
+        lcd.region = r;
+        screens.refresh();
+        lcdTouch(() => json(res, 200, lcdInfo()));
+    },
+    'POST /api/lcd/setup': async (req, res) => {
+        const b = await body(req), args = ['setup', String(b.model || '')];
+        if (b.rotate !== undefined) args.push(String(Number(b.rotate)));
+        lcdRoot(args, (err, text) => {
+            if (err) return json(res, 400, { error: err.split('\n').slice(-3).join(' ') });
+            cfg.LCD_MODEL = String(b.model); if (b.rotate !== undefined) cfg.LCD_ROTATE = String(Number(b.rotate));
+            log('info', 'LCD: set up ' + b.model + ', reboot to start it');
+            json(res, 200, Object.assign(lcdInfo(), { result: text, reboot: true }));
+        });
+    },
+    'POST /api/lcd/off': (req, res) => lcdRoot(['off'], (err, text) => {
+        if (err) return json(res, 400, { error: err });
+        cfg.LCD_MODEL = ''; log('info', 'LCD: turned off, reboot to finish');
+        json(res, 200, Object.assign(lcdInfo(), { result: text, reboot: true }));
+    }),
+    'POST /api/lcd/test': (req, res) => execFile('carhud-lcd', ['test'], { timeout: 15000 }, (err, out) => json(res, err ? 400 : 200, { result: String(out || (err && err.message) || '').trim() })),
+    /* touch calibration: the LCD shows four targets; the taps come back here */
+    'POST /api/lcd/calibrate': (req, res) => { broadcast({ t: 'lcd-calibrate' }); json(res, 200, {}); },
+    'POST /api/lcd/calibration': async (req, res) => {
+        const b = await body(req);
+        try { lcd.calibrate(b.points); } catch (e) { return json(res, 400, { error: e.message }); }
+        log('info', 'LCD touch calibrated from ' + b.points.length + ' taps');
+        lcdTouch(() => json(res, 200, lcdInfo()));
+    },
+    'POST /api/lcd/calibration/reset': (req, res) => { lcd.resetCalibration(); lcdTouch(() => json(res, 200, lcdInfo())); },
     'GET /api/audio': (req, res) => audioInfo((i) => json(res, 200, i)),
     'POST /api/audio': async (req, res) => {
         const b = await body(req);
@@ -433,7 +495,7 @@ const routes = {
         json(res, 200, { ok: true, log: UPDATE_LOG });
     },
 };
-const SYSTEM_ACTIONS = /^POST \/api\/system\//;
+const SYSTEM_ACTIONS = /^POST \/api\/(system\/|lcd\/(setup|off)$)/;
 function phoneConfig() {
     return { name: cfg.PHONE_NAME, httpsPort: tlsOk ? Number(cfg.PHONE_HTTPS_PORT) : null, httpPort: cfg.port,
         geocoder: cfg.PHONE_GEOCODER_URL, router: cfg.PHONE_ROUTER_URL, hostname: os.hostname(),
@@ -461,6 +523,8 @@ const handler = async (req, res) => {
         if (url === '/') return sendFile(req, res, path.join(ROOT, 'web', 'index.html'));
         if (url === '/hud') return sendFile(req, res, path.join(ROOT, 'web', 'hud.html'));
         if (url === '/screen') return sendFile(req, res, path.join(ROOT, 'web', 'screen.html'));
+        if (url === '/debug') return sendFile(req, res, path.join(ROOT, 'web', 'debug.html'));
+        if (url === '/lcd-calibrate') return sendFile(req, res, path.join(ROOT, 'web', 'lcd-calibrate.html'));
         if (url === '/display') return sendFile(req, res, path.join(ROOT, 'web', 'display.html'));
         if (url === '/phone') { res.writeHead(302, { location: '/phone/' }); return res.end(); }
         if (url === '/phone/carhud-ca.crt') {

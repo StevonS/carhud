@@ -19,6 +19,8 @@ const TYPES = {
     hud: 'HUD',
     desk: 'Desk (home screen)',
     console: 'Console (control panel)',
+    debug: 'Debug console (small screens)',
+    terminal: 'Terminal (command line)',
     gauges: 'Gauges',
     navigate: 'Navigation',
     phone: 'Phone & music',
@@ -29,10 +31,13 @@ const TYPES = {
 };
 const ROTATIONS = ['normal', 'left', 'right', 'inverted'];
 
+const LCD = 'LCD';    // the SPI touch screen on the header pins: not an X output, see lcd.js
+
 class Screens extends EventEmitter {
-    constructor(cfg) {
+    constructor(cfg, lcd) {
         super();
         this.cfg = cfg;
+        this.lcd = lcd || null;
         this.file = path.join(cfg.DATA_DIR, 'screens.json');
         this.outputs = [];          // [{name, connected, width, height, x, y, primary}]
         this.xOk = false;
@@ -56,6 +61,11 @@ class Screens extends EventEmitter {
                     return m && { name: m[1], connected: m[2] === 'connected', primary: !!m[3], width: m[4] ? Number(m[4]) : null, height: m[5] ? Number(m[5]) : null, x: m[6] ? Number(m[6]) : null, y: m[7] ? Number(m[7]) : null };
                 }).filter(Boolean).filter((o) => o.connected);
             }
+            const fb = this.lcd && this.lcd.detect();
+            if (fb) {
+                const r = this.lcd.region;
+                this.outputs.push({ name: LCD, connected: true, primary: false, virtual: true, fb: fb.dev, width: fb.width, height: fb.height, x: r ? r.x : null, y: r ? r.y : null });
+            }
             if (JSON.stringify(this.outputs.map((o) => [o.name, o.connected, o.width, o.height])) !== before) this.emit('change');
             if (cb) cb();
         });
@@ -64,6 +74,8 @@ class Screens extends EventEmitter {
     /** the old settings (v2.2 and before) decide the first layout: HUD on HDMI, desk on the other */
     defaults(name, index, names) {
         const c = this.cfg;
+        if (name === LCD) return { screen: 'debug', mirror: false, flip: false, bmw: false, rotate: 'normal', url: '' };
+        names = names.filter((n) => n !== LCD);
         const hudOut = c.HUD_OUTPUT && c.HUD_OUTPUT !== 'auto' ? c.HUD_OUTPUT : (names.find((n) => /^HDMI/.test(n)) || names[0]);
         const deskOut = c.DESK_OUTPUT && c.DESK_OUTPUT !== 'auto' ? c.DESK_OUTPUT : (names.find((n) => /^DSI/.test(n) && n !== hudOut) || names.find((n) => n !== hudOut));
         const screen = name === hudOut ? 'hud' : name === deskOut ? 'desk' : 'console';
@@ -90,25 +102,29 @@ class Screens extends EventEmitter {
         const next = Object.assign({}, cur);
         if (changes.screen !== undefined) { if (!TYPES[changes.screen]) throw new Error('unknown screen ' + changes.screen); next.screen = changes.screen; }
         ['mirror', 'flip', 'bmw'].forEach((k) => { if (changes[k] !== undefined) next[k] = !!changes[k]; });
+        if (changes.rotate !== undefined && output === LCD && changes.rotate !== 'normal') throw new Error('the LCD is turned when it is set up: carhud lcd setup MODEL 0|90|180|270');
         if (changes.rotate !== undefined) { if (!ROTATIONS.includes(changes.rotate)) throw new Error('rotate: ' + ROTATIONS.join(', ')); next.rotate = changes.rotate; }
         if (changes.url !== undefined) next.url = String(changes.url);
         if (next.screen === 'url' && !/^(https?:|\/)/.test(next.url)) throw new Error('give a web address (http://...)');
         this.saved[output] = next;
         fs.mkdirSync(path.dirname(this.file), { recursive: true });
         fs.writeFileSync(this.file, JSON.stringify({ outputs: this.saved }, null, 1));
-        const off = (a) => a.screen === 'off', desk = (a) => a.screen === 'desktop';
+        // "off", rotation and the LCD's own changes move other things around; a terminal or no window means a new window
+        const off = (a) => a.screen === 'off', win = (a) => (a.screen === 'desktop' ? 'none' : a.screen === 'terminal' ? 'term' : 'page');
         let needs = 'page';
-        if (off(cur) !== off(next) || cur.rotate !== next.rotate) needs = 'layout';
-        else if (desk(cur) !== desk(next)) needs = 'window';
+        if (off(cur) !== off(next) || cur.rotate !== next.rotate) needs = output === LCD ? 'window' : 'layout';
+        else if (win(cur) !== win(next)) needs = 'window';
         this.emit('change');
         return needs;
     }
 
-    /** for carhud-screens: one line per connected output, "NAME SCREEN ROTATE", in layout order */
+    /** for carhud-screens: one line per connected output, "NAME SCREEN ROTATE", in layout order;
+     *  the LCD last, as "LCD SCREEN normal WxH /dev/fbN BPP" */
     layoutText() {
         const a = this.assignments();
-        return this.outputs.map((o) => o.name + ' ' + a[o.name].screen + ' ' + (a[o.name].rotate || 'normal')).join('\n') + '\n';
+        return this.outputs.map((o) => o.name + ' ' + a[o.name].screen + ' ' + (a[o.name].rotate || 'normal') +
+            (o.virtual ? ' ' + o.width + 'x' + o.height + ' ' + o.fb + ' ' + ((this.lcd.detect() || {}).bpp || 16) : '')).join('\n') + '\n';
     }
 }
 
-module.exports = { Screens, TYPES };
+module.exports = { Screens, TYPES, LCD };

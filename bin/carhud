@@ -48,6 +48,10 @@ const HELP = `carhud: control the car HUD
   carhud screens --windowed|--stop   reopen the windows (as windows / close them)
   carhud audio                  sound outputs (USB sound card for the car's AUX, jack, HDMI)
   carhud audio set <id|auto>    where the sound goes;  carhud audio test;  carhud audio volume 80
+  carhud lcd                     the 3.5" touch LCD on the header pins: is it working
+  carhud lcd list               the LCD models it knows
+  carhud lcd setup <model> [rot]   turn it on (asks for sudo; then reboot), rot 0|90|180|270
+  carhud lcd test|calibrate|off    colour bars / tap targets to fix the touch / turn it off
   carhud update                 get the newest CarHUD from GitHub and apply it
   carhud gears <final> <tyre> <ratio1> <ratio2> ...
                                 work out OBD_GEAR_RATIOS, e.g.
@@ -270,6 +274,21 @@ async function main() {
         case 'audio': case 'sound': {
             const r = spawnSync('carhud-audio', args.length ? args : ['list'], { stdio: 'inherit' });
             if (r.error) throw new Error('carhud-audio not found: run carhud update');
+            process.exit(r.status || 0);
+        }
+        case 'lcd': {
+            const sub = args[0] || 'status';
+            if (sub === 'calibrate') { await post('/api/lcd/calibrate'); console.log('tap the crosses on the LCD (30 s)'); return; }
+            if (sub === 'calibrate-reset') { await post('/api/lcd/calibration/reset'); console.log('touch calibration reset'); return; }
+            const root = sub === 'setup' || sub === 'off';
+            const r = spawnSync(root && process.getuid() !== 0 ? 'sudo' : 'carhud-lcd', root && process.getuid() !== 0 ? ['carhud-lcd', sub, ...args.slice(1)] : [sub, ...args.slice(1)], { stdio: 'inherit' });
+            if (r.error) throw new Error('carhud-lcd not found: run carhud update');
+            if (sub === 'status') {
+                try {
+                    const l = await get('/api/lcd');
+                    if (l.fb) console.log('server:      shows "' + (l.screen || '?') + '"' + (l.region ? ' at ' + l.region.w + 'x' + l.region.h + '+' + l.region.x + '+' + l.region.y : ' (not placed yet: carhud screens)') + (l.calibrated ? ', touch calibrated' : ''));
+                } catch (e) { /* server not running */ }
+            }
             process.exit(r.status || 0);
         }
         case 'update': { const r = spawnSync(path.join(ROOT, 'system', 'carhud-update'), args, { stdio: 'inherit' }); process.exit(r.status || 0); }

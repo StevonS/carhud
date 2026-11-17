@@ -10,6 +10,11 @@
 # `carhud screens set <output> <screen>`. Each window is /display?output=NAME, which swaps its content by
 # itself when the choice changes. This script only places windows: "off" and rotation change the layout,
 # "desktop" means no window, so the plain desktop shows on that output.
+#
+# The 3.5" SPI LCD on the header pins isn't an X output (its driver gives a framebuffer, /dev/fbN), so it
+# gets a part of the X screen next to (or under) the real displays, marked as a monitor called CARHUD-LCD;
+# its window opens there, and ffmpeg copies that part to the LCD LCD_FPS times a second. Its touch layer is
+# pointed at the same part (the server does that, with the calibration).
 set -u
 CONF=${CARHUD_CONF:-/etc/carhud.conf}
 # shellcheck source=/dev/null
@@ -25,8 +30,9 @@ CHROMIUM=$(command -v chromium || command -v chromium-browser || true)
 [ -n "$CHROMIUM" ] || { log "chromium is not installed"; exit 1; }
 
 MODE=all; ONLY=""
+LCD_FPS=${LCD_FPS:-20}
 case "${1:-}" in
-    --stop) pkill -f 'carhud-chromium-' 2>/dev/null; log "stopped"; exit 0;;
+    --stop) pkill -f 'carhud-chromium-' 2>/dev/null; pkill -f 'carhud-term-' 2>/dev/null; pkill -f carhud-lcd-copy 2>/dev/null; log "stopped"; exit 0;;
     --windowed) MODE=windowed;;
     --only) MODE=only; ONLY=${2:-}; [ -n "$ONLY" ] || { echo "--only needs an output name"; exit 1; };;
     "") ;;
@@ -64,32 +70,93 @@ launch() {    # output x y w h
     NO_PROXY=127.0.0.1,localhost "$CHROMIUM" "${args[@]}" >"/tmp/carhud-$out.log" 2>&1 &
     log "$out: window at ${w}x${h}+${x}+${y}"
 }
-close() { pkill -f "carhud-chromium-$1( |$)" 2>/dev/null && log "$1: window closed"; true; }
+close() {
+    local c=0
+    pkill -f "carhud-chromium-$1( |$)" 2>/dev/null && c=1
+    pkill -f "carhud-term-$1( |$)" 2>/dev/null && c=1
+    [ $c = 1 ] && log "$1: window closed"; true
+}
+terminal() {  # output x y w h: a full-screen terminal (xterm) for the command line
+    local out=$1 x=$2 y=$3 w=$4 h=$5 fs=11
+    close "$out"; sleep 0.2
+    command -v xterm >/dev/null || { log "$out: xterm is not installed (sudo apt install xterm): no terminal"; return; }
+    [ "$w" -le 640 ] && fs=8
+    xterm -name "carhud-term-$out" -title "CarHUD terminal ($out)" -geometry "+$x+$y" -fullscreen -fa 'DejaVu Sans Mono' -fs "$fs" \
+        -bg black -fg '#d0d0d0' -cr '#ff8a2a' +sb -e bash -l >/dev/null 2>&1 &
+    log "$out: terminal at ${w}x${h}+${x}+${y}"
+}
+show() {      # output screen x y w h: whatever goes on it
+    case "$2" in
+        off|desktop) close "$1";;
+        terminal) terminal "$1" "$3" "$4" "$5" "$6";;
+        *) launch "$1" "$3" "$4" "$5" "$6";;
+    esac
+}
+
+# ---- the SPI LCD ------------------------------------------------------------------------------
+LCD_LINE=$(echo "$LAYOUT" | awk '$1=="LCD"')
+LAYOUT=$(echo "$LAYOUT" | awk '$1!="LCD"')
+lcd_stop() { pkill -f carhud-lcd-copy 2>/dev/null; true; }
+lcd_place() {  # find a place for it on the X screen, mark it, start copying; sets X Y W H
+    local fb bpp right=0 bottom=0 max mw mh sw sh pf
+    read -r _ _ _ size fb bpp <<< "$LCD_LINE"
+    W=${size%x*}; H=${size#*x}
+    read -r right bottom <<< "$(xrandr --query | awk '/ connected/ { for (i = 3; i <= NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) {
+        split($i, a, /[x+]/); if (a[1] + a[3] > r) r = a[1] + a[3]; if (a[2] + a[4] > b) b = a[2] + a[4]; break } } END { print r + 0, b + 0 }')"
+    max=$(xrandr --query | sed -n 's/.*maximum \([0-9]*\) x \([0-9]*\).*/\1 \2/p' | head -1); mw=${max% *}; mh=${max#* }
+    mw=${mw:-8192}; mh=${mh:-8192}
+    # to the right of the displays; below them if the screen can't get that wide (a Pi 3 stops at 2048)
+    if [ $((right + W)) -le "$mw" ]; then X=$right; Y=0
+    elif [ $((bottom + H)) -le "$mh" ]; then X=0; Y=$bottom
+    else X=0; Y=0; log "LCD: no room next to the displays (max ${mw}x$mh): it copies the top-left of the first display"; fi
+    sw=$(( right > X + W ? right : X + W )); sh=$(( bottom > Y + H ? bottom : Y + H ))
+    xrandr --fb "${sw}x${sh}" 2>>"$LOG" || log "LCD: could not resize the screen to ${sw}x$sh"
+    xrandr --delmonitor CARHUD-LCD >/dev/null 2>&1
+    xrandr --setmonitor CARHUD-LCD "$W/1x$H/1+$X+$Y" none 2>>"$LOG" || log "LCD: could not mark its monitor (xrandr --setmonitor)"
+    curl -s -o /dev/null --max-time 5 -H 'content-type: application/json' \
+        -d "{\"x\":$X,\"y\":$Y,\"w\":$W,\"h\":$H,\"sw\":$sw,\"sh\":$sh}" "$BASE/api/lcd/region" || log "LCD: server not told where it is (touch may be off)"
+    lcd_stop; sleep 0.2
+    command -v ffmpeg >/dev/null || { log "LCD: ffmpeg is not installed (sudo apt install ffmpeg): nothing copied to it"; return; }
+    [ "$bpp" = 32 ] && pf=bgra || pf=rgb565le
+    # the copier restarts by itself if it stops (e.g. X restarting); carhud-lcd test pauses it
+    setsid bash -c "while :; do (exec -a carhud-lcd-copy ffmpeg -loglevel error -nostdin -f x11grab -draw_mouse 0 -framerate $LCD_FPS \
+        -video_size ${W}x$H -i $DISPLAY+$X,$Y -pix_fmt $pf -f fbdev $fb); sleep 3; done" >>/tmp/carhud-lcd-copy.log 2>&1 < /dev/null &
+    log "LCD: ${W}x$H at +$X+$Y of the ${sw}x$sh screen, copied to $fb at $LCD_FPS fps"
+}
+lcd_blank() { read -r _ _ _ _ fb _ <<< "$LCD_LINE"; head -c $((480 * 480 * 4)) /dev/zero > "$fb" 2>/dev/null; true; }
+lcd_show() {  # the LCD's screen
+    local screen; read -r _ screen _ <<< "$LCD_LINE"
+    if [ "$screen" = off ]; then close LCD; lcd_stop; lcd_blank; log "LCD: off"; return; fi
+    lcd_place
+    show LCD "$screen" "$X" "$Y" "$W" "$H"
+}
 
 if [ "$MODE" = windowed ]; then
     pkill -f 'carhud-chromium-' 2>/dev/null; sleep 0.5
     x=0
     while read -r out screen _rot; do
         [ -z "$out" ] && continue
-        case "$screen" in off|desktop) continue;; esac
+        case "$screen" in off|desktop|terminal) continue;; esac
         launch "$out" "$x" 0 800 480; x=$((x + 820))
     done <<< "$LAYOUT"
+    if [ -n "$LCD_LINE" ]; then read -r _ screen _ size _ <<< "$LCD_LINE"; case "$screen" in off|desktop|terminal) ;; *) launch LCD "$x" 0 "${size%x*}" "${size#*x}";; esac; fi
     exit 0
 fi
 
 if [ "$MODE" = only ]; then
+    if [ "$ONLY" = LCD ]; then [ -n "$LCD_LINE" ] || { log "LCD: its driver isn't loaded (carhud lcd status)"; exit 1; }; lcd_show; exit 0; fi
     line=$(echo "$LAYOUT" | awk -v o="$ONLY" '$1==o')
     [ -n "$line" ] || { log "$ONLY: not connected"; exit 1; }
     read -r out screen _rot <<< "$line"
     case "$screen" in
         off|desktop) close "$out";;
-        *) g=$(geom "$out"); [ -n "$g" ] || { log "$out is off: run carhud-screens"; exit 1; }; split_geom "$g"; launch "$out" "$X" "$Y" "$W" "$H";;
+        *) g=$(geom "$out"); [ -n "$g" ] || { log "$out is off: run carhud-screens"; exit 1; }; split_geom "$g"; show "$out" "$screen" "$X" "$Y" "$W" "$H";;
     esac
     exit 0
 fi
 
 # everything: outputs side by side in this order, each turned as chosen; then a window on each
-pkill -f 'carhud-chromium-' 2>/dev/null; sleep 0.5
+pkill -f 'carhud-chromium-' 2>/dev/null; pkill -f 'carhud-term-' 2>/dev/null; sleep 0.5
 prev=""
 while read -r out screen rot; do
     [ -z "$out" ] && continue
@@ -103,7 +170,7 @@ sleep 1
 # a touchscreen (e.g. the official DSI display) belongs to the DSI output
 DSI=$(echo "$LAYOUT" | awk '$1 ~ /^DSI/ && $2 != "off" {print $1; exit}')
 if [ -n "$DSI" ] && command -v xinput >/dev/null; then
-    xinput list --name-only 2>/dev/null | grep -iE 'touch|ft5x06|ft5406|raspberrypi-ts|goodix|ilitek' | while read -r dev; do
+    xinput list --name-only 2>/dev/null | grep -iE 'touch|ft5x06|ft5406|raspberrypi-ts|goodix|ilitek' | grep -viE 'ADS7846|XPT2046' | while read -r dev; do
         xinput map-to-output "$dev" "$DSI" 2>/dev/null && log "touch '$dev' -> $DSI"
     done
 fi
@@ -113,6 +180,7 @@ while read -r out screen _rot; do
     case "$screen" in
         off) ;;
         desktop) log "$out: desktop (no window)";;
-        *) g=$(geom "$out"); if [ -n "$g" ]; then split_geom "$g"; launch "$out" "$X" "$Y" "$W" "$H"; else log "$out: no picture size yet"; fi;;
+        *) g=$(geom "$out"); if [ -n "$g" ]; then split_geom "$g"; show "$out" "$screen" "$X" "$Y" "$W" "$H"; else log "$out: no picture size yet"; fi;;
     esac
 done <<< "$LAYOUT"
+if [ -n "$LCD_LINE" ]; then lcd_show; else xrandr --delmonitor CARHUD-LCD >/dev/null 2>&1; lcd_stop; fi

@@ -36,6 +36,11 @@ const DEFAULTS = {
     PHONE_PAIR_CONFIRM: '0',   // 1: a screen must say yes to every pairing; 0: phones pair by themselves while the pairing window is open
     PHONE_ADAPTER: '',         // hci0 etc., empty = the first one
     PHONE_AUDIO_DEVICE: 'default',
+    LCD_MODEL: '',             // the 3.5" SPI LCD on the header pins (set by carhud lcd setup)
+    LCD_ROTATE: '90',
+    LCD_FPS: '20',             // how often its picture is copied
+    LCD_TOUCH_CAL: '',         // "minx maxx miny maxy" to override the model's touch calibration
+    LCD_TOUCH_SWAP: '',        // 0/1 to override whether the touch axes are swapped
     PHONE_PYTHON: 'python3',
     PHONE_HTTPS_PORT: '8443',  // the phone web app (GPS needs https)
     PHONE_TLS_DIR: '/var/lib/carhud/tls',

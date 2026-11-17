@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>CarHUD debug</title>
+<link rel="stylesheet" href="/css/carhud.css">
+<style>
+  /* made for the 480x320 header-pin LCD and a fingertip: big targets, no hover, no scrolling except the log */
+  html, body { height: 100%; overflow: hidden; font-size: 13px; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+  body { display: grid; grid-template-rows: 30px 1fr 46px; }
+  #top { display: flex; align-items: center; gap: 4px; padding: 0 6px; background: var(--panel); border-bottom: 1px solid var(--line); overflow: hidden; }
+  #top b { color: var(--accent); font-size: 12px; letter-spacing: .05em; margin-right: 2px; }
+  #top .pill { padding: 1px 6px; font-size: 11px; gap: 4px; }
+  #top .pill::before { width: 6px; height: 6px; }
+  #clock { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .pane { display: none; padding: 6px 8px; overflow: hidden; min-height: 0; }
+  .pane.on { display: block; }
+  #tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--panel); }
+  #tabs button { border: 0; border-radius: 0; background: none; color: var(--dim); font-size: 13px; font-weight: 600; letter-spacing: .03em; }
+  #tabs button.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
+  #tabs button .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--err); margin-left: 4px; vertical-align: middle; visibility: hidden; }
+  #tabs button .dot.show { visibility: visible; }
+  /* status */
+  .kv { display: grid; grid-template-columns: 74px 1fr; gap: 2px 8px; line-height: 1.35; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .kv span:nth-child(even) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--err); }
+  /* values */
+  #vals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; height: 100%; }
+  .v { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 0; }
+  .v .n { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .v .l { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .v.big .n { font-size: 34px; color: var(--accent); }
+  /* log */
+  #log { height: 100%; overflow-y: auto; font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+  #log .warn { color: var(--warn); } #log .error { color: var(--err); } #log .t { color: #555c66; }
+  /* actions */
+  #acts { display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 6px; height: 100%; }
+  #acts button { font-size: 13px; font-weight: 600; padding: 2px; border-radius: 8px; line-height: 1.15; }
+  #acts button.on { border-color: var(--accent); color: var(--accent); background: rgba(255,138,42,.12); }
+  #acts .src { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; grid-column: 1 / -1; }
+  #toast { position: fixed; left: 50%; bottom: 54px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--accent); border-radius: 8px; padding: 5px 12px; display: none; max-width: 92%; font-size: 12px; }
+  #confirm { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: none; place-items: center; z-index: 9; }
+  #confirm div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 80%; text-align: center; }
+  #confirm p { margin: 0 0 12px; font-size: 14px; }
+  #confirm button { min-width: 100px; padding: 10px; margin: 0 4px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="top">
+  <b>CARHUD</b>
+  <span id="pLink" class="pill bad">link</span>
+  <span id="pApp" class="pill">app</span>
+  <span id="pSrc" class="pill accent">src</span>
+  <span id="pObd" class="pill">obd</span>
+  <span id="pBt" class="pill">bt</span>
+  <span id="clock"></span>
+</div>
+
+<div class="pane on" id="paneStatus"><div class="kv" id="kv"></div></div>
+<div class="pane" id="paneValues"><div id="vals"></div></div>
+<div class="pane" id="paneLog"><div id="log"></div></div>
+<div class="pane" id="paneActions">
+  <div id="acts">
+    <div class="src" id="srcSeg"></div>
+    <button data-a="hold">Hold values</button>
+    <button data-a="obd">Reconnect OBD</button>
+    <button data-a="reload">Reload screens</button>
+    <button data-a="layout">Re-do screen layout</button>
+    <button data-a="app">Restart HUD app</button>
+    <button data-a="hotspot" id="bAp">Hotspot</button>
+    <button data-a="pair">Pair a phone</button>
+    <button data-a="service" class="danger">Restart CarHUD</button>
+    <button data-a="reboot" class="danger">Reboot Pi</button>
+  </div>
+</div>
+
+<nav id="tabs">
+  <button data-p="paneStatus" class="on">Status</button>
+  <button data-p="paneValues">Values</button>
+  <button data-p="paneLog">Log<span class="dot" id="logDot"></span></button>
+  <button data-p="paneActions">Actions</button>
+</nav>
+<div id="toast"></div>
+<div id="confirm"><div><p id="cq"></p><button id="cNo">Cancel</button><button id="cYes" class="primary">Yes</button></div></div>
+
+<script src="/js/carhud.js"></script>
+<script>
+/* The debug console: what the Pi is doing at a glance, the log, and the buttons you need when something is
+ * wrong, sized for the 3.5" LCD on the header pins (works on any screen). */
+(function () {
+  const { api, $, fmt } = CarHud;
+  let st = null, sys = null, phone = null, obdSnap = null, vals = null, lastErr = 0;
+
+  /* tabs */
+  document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => {
+    document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('on', p.id === b.dataset.p));
+    if (b.dataset.p === 'paneLog') { $('#logDot').classList.remove('show'); const l = $('#log'); l.scrollTop = l.scrollHeight; }
+  }; });
+
+  function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 3000); }
+  function confirmIt(q, fn) {
+    $('#cq').textContent = q; $('#confirm').style.display = 'grid';
+    $('#cNo').onclick = () => { $('#confirm').style.display = 'none'; };
+    $('#cYes').onclick = () => { $('#confirm').style.display = 'none'; fn(); };
+  }
+  const pill = (id, text, cls) => { const e = $(id); e.textContent = text; e.className = 'pill ' + (cls || ''); };
+  const dur = (s) => { s = Math.round(s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm'; };
+
+  /* status */
+  function renderStatus() {
+    const rows = [];
+    const add = (k, v, cls) => rows.push('<span>' + k + '</span><span' + (cls ? ' class="' + cls + '"' : '') + '>' + v + '</span>');
+    const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+    if (sys) {
+      add('Address', esc((sys.ips || []).map((i) => i.ip).join('  ') || 'no network') + (sys.ips && sys.ips.length ? ':' + sys.port : ''), sys.ips && sys.ips.length ? '' : 'warn');
+      add('Wi-Fi', sys.wifi ? esc(sys.wifi.connection || 'not connected') + (sys.wifi.hotspot ? ' (hotspot)' : '') : '?', sys.wifi && sys.wifi.connection ? '' : 'warn');
+      const th = sys.throttled;
+      add('Pi', (sys.temp !== null ? fmt(sys.temp, 0) + '°C  ' : '') + 'load ' + fmt(sys.load[0], 2) + '  mem ' + Math.round((sys.memTotal - sys.memFree) / sys.memTotal * 100) + '%',
+        sys.temp > 75 ? 'bad' : sys.temp > 65 ? 'warn' : '');
+      add('Power', th ? (th.underVoltageNow ? 'UNDER-VOLTAGE NOW' : th.throttledNow ? 'throttled now' : th.underVoltageSinceBoot ? 'ok (was low since boot)' : 'ok') : '?',
+        th && (th.underVoltageNow || th.throttledNow) ? 'bad' : th && th.underVoltageSinceBoot ? 'warn' : 'ok');
+      add('Up', dur(sys.uptime) + '  v' + esc(sys.version) + ' ' + esc((sys.commit || '').slice(0, 7)));
+    } else add('System', 'asking...');
+    if (st) {
+      add('HUD app', esc(st.app), st.app === 'running' ? 'ok' : 'warn');
+      add('Source', esc(st.source) + (st.auto ? ' (auto)' : ''));
+      add('OBD', esc(st.obd.state) + (st.obd.detail ? ' · ' + esc(st.obd.detail) : ''), st.obd.state === 'live' ? 'ok' : /error|fail/.test(st.obd.state) ? 'bad' : '');
+    }
+    if (phone) {
+      const bt = phone.bt || {}, conn = (bt.devices || []).filter((d) => d.connected);
+      add('Phone', !bt.available ? 'Bluetooth: ' + esc(bt.error || 'not available') : conn.length ? esc(conn.map((d) => d.name || d.address).join(', ')) : 'none connected' + (phone.pairing ? ' (pairing open)' : ''),
+        !bt.available ? 'warn' : conn.length ? 'ok' : '');
+      add('GPS', phone.gps ? (phone.gps.fresh ? 'fix ±' + fmt(phone.gps.accuracy, 0) + ' m' : 'old (' + Math.round(phone.gps.age / 1000) + 's)') + (phone.simulating ? ' simulated' : '') : 'none');
+    }
+    $('#kv').innerHTML = rows.join('');
+  }
+  function poll() { api('/api/system').then((s) => { sys = s; renderStatus(); }).catch(() => {}); }
+  poll(); setInterval(poll, 5000);
+
+  /* values */
+  const VALS = [['speed', 'km/h', 0, 1], ['rpm', 'rpm', 0, 1], ['gear', 'gear', 0], ['coolant', 'coolant °C', 0], ['oil', 'oil °C', 0], ['boost', 'boost bar', 2], ['afr', 'AFR', 1], ['fuel', 'fuel', 0]];
+  $('#vals').innerHTML = VALS.map(([k, l, , big]) => '<div class="v' + (big ? ' big' : '') + '"><span class="n" id="v_' + k + '">--</span><span class="l">' + l + '</span></div>').join('');
+  function renderVals() {
+    if (!vals) return;
+    VALS.forEach(([k, , d]) => { const v = vals[k]; $('#v_' + k).textContent = k === 'gear' ? (v ? (v < 0 ? 'R' : v) : 'N') : fmt(v, d); });
+  }
+
+  /* log */
+  const logEl = $('#log');
+  function addLog(m) {
+    const atEnd = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+    const d = document.createElement('div'); d.className = m.level;
+    const t = document.createElement('span'); t.className = 't'; t.textContent = new Date(m.time).toTimeString().slice(0, 8) + ' ';
+    d.append(t, m.text);
+    logEl.append(d);
+    while (logEl.childNodes.length > 300) logEl.firstChild.remove();
+    if (atEnd) logEl.scrollTop = logEl.scrollHeight;
+    if ((m.level === 'error' || m.level === 'warn') && !$('#paneLog').classList.contains('on') && Date.now() - lastErr > 0) { $('#logDot').classList.add('show'); lastErr = Date.now(); }
+  }
+
+  /* actions */
+  const SRC = [['auto', 'Auto'], ['demo', 'Demo'], ['obd', 'Car'], ['gps', 'GPS'], ['manual', 'Manual']];
+  SRC.forEach(([s, n]) => { const b = document.createElement('button'); b.dataset.s = s; b.textContent = n; b.onclick = () => api('/api/source', { source: s }).then(() => toast('Source: ' + n)); $('#srcSeg').append(b); });
+  function renderSrc() { if (!st) return; document.querySelectorAll('#srcSeg button').forEach((b) => b.classList.toggle('on', st.auto ? b.dataset.s === 'auto' : b.dataset.s === st.source)); }
+  const ACT = {
+    hold: () => api('/api/hold', {}).then(() => toast('Values held (manual)')),
+    obd: () => api('/api/obd/reconnect', {}).then(() => toast('Reconnecting the OBD adapter')),
+    reload: () => api('/api/displays/reload', {}),
+    layout: () => api('/api/screens/relayout', {}).then(() => toast('Redoing the screen layout')),
+    app: () => api('/api/app/restart', {}).then(() => toast('Restarting the HUD app')),
+    hotspot: () => { const on = sys && sys.wifi && sys.wifi.hotspot; confirmIt(on ? 'Leave the hotspot and join the home Wi-Fi?' : 'Start the hotspot? Wi-Fi and SSH over Wi-Fi drop.', () => api('/api/system/wifi', { mode: on ? 'home' : 'ap' }).then((r) => toast(r.error || (on ? 'Leaving the hotspot' : 'Starting the hotspot')))); },
+    pair: () => api('/api/phone/discoverable', { on: true }).then((r) => toast(r.error || 'Pairing open: find "' + (r.name || 'CarHUD') + '" on the phone')),
+    service: () => confirmIt('Restart the CarHUD service?', () => api('/api/system/restart', {}).then((r) => toast(r.error || 'Restarting...'))),
+    reboot: () => confirmIt('Reboot the Pi?', () => api('/api/system/reboot', {}).then((r) => toast(r.error || 'Rebooting...'))),
+  };
+  document.querySelectorAll('#acts button[data-a]').forEach((b) => { b.onclick = () => ACT[b.dataset.a](); });
+
+  setInterval(() => { $('#clock').textContent = new Date().toTimeString().slice(0, 5); }, 1000);
+
+  const link = CarHud.connect({ log: true }, {
+    open: () => pill('#pLink', 'link', 'ok'),
+    close: () => pill('#pLink', 'no link', 'bad'),
+    message: (m) => {
+      if (m.t === 'state') {
+        st = m;
+        pill('#pApp', m.app === 'running' ? 'app' : m.app, m.app === 'running' ? 'ok' : 'warn');
+        pill('#pSrc', m.source + (m.auto ? '·a' : ''), 'accent');
+        pill('#pObd', m.obd.state === 'live' ? 'obd' : 'obd ' + m.obd.state, m.obd.state === 'live' ? 'ok' : m.obd.state === 'off' ? '' : 'warn');
+        renderStatus(); renderSrc();
+      } else if (m.t === 'values') { vals = m.hud; if ($('#paneValues').classList.contains('on')) renderVals(); }
+      else if (m.t === 'phone') {
+        phone = m.phone;
+        const bt = phone.bt || {}, conn = (bt.devices || []).some((d) => d.connected);
+        pill('#pBt', conn ? 'phone' : 'bt', !bt.available ? 'bad' : conn ? 'ok' : '');
+        $('#bAp').textContent = sys && sys.wifi && sys.wifi.hotspot ? 'Hotspot off' : 'Hotspot on';
+        renderStatus();
+      } else if (m.t === 'log') addLog(m);
+    },
+  });
+  setInterval(() => { if ($('#paneValues').classList.contains('on')) renderVals(); $('#bAp').textContent = sys && sys.wifi && sys.wifi.hotspot ? 'Hotspot off' : 'Hotspot on'; }, 500);
+  window.carhudLink = link;
+})();
+</script>
+</body>
+</html>

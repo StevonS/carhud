@@ -18,6 +18,7 @@
 <section class="card"><h2>This Pi</h2><div class="kv" id="info"></div></section>
 <section class="card"><h2>Screens</h2><div id="screensBox"></div></section>
 <section class="card"><h2>Sound output</h2><div id="audioBox"></div></section>
+<section class="card"><h2>3.5" LCD (header pins)</h2><div id="lcdBox"></div></section>
 <section class="card">
   <h2>Actions</h2>
   <div class="actions">
@@ -56,7 +57,8 @@
   }
   const screensPanel = CarHudPanels.screens($('#screensBox'));
   CarHudPanels.audio($('#audioBox'));
-  CarHud.connect({ data: false }, { message: (m) => { if (m.t === 'screens') screensPanel.update(m); } });
+  const lcdPanel = CarHudPanels.lcd($('#lcdBox'));
+  CarHud.connect({ data: false }, { message: (m) => { if (m.t === 'screens') { screensPanel.update(m); lcdPanel.reload(); } } });
   let cfg = {}, hotspot = false;
   api('/api/phone/config').then((c) => { cfg = c; });
   load(); setInterval(load, 5000);

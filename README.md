@@ -114,6 +114,7 @@ carhud reload                     reload all screens
 carhud screens [set|rotate|identify]   what each display shows (see Screens)
 carhud screens --windowed|--stop
 carhud audio [set <id|auto>|test|volume N]   sound output (car AUX)
+carhud lcd [list|setup <model> [rot]|test|calibrate|off]   the 3.5" header-pin LCD
 carhud gears 4.111 245/40R18 3.454 1.947 1.296 0.972 0.780 0.666
 carhud phone                      Bluetooth phone, music, GPS, route
 carhud pair                       let a new phone pair (3 min), shows how it goes
@@ -183,6 +184,8 @@ Every display shows whatever you choose, and you can swap them at any time:
 | HUD | the HUD, with Mirror / Flip per display |
 | Desk | the touch home screen |
 | Console | the control panel, for debugging on a display in the car |
+| Debug console | a compact touch console made for small screens: status, live values, the log and quick actions (the 3.5" LCD's default) |
+| Terminal | a full-screen command line (xterm) |
 | Gauges, Navigation, Phone & music | one desk app, full screen |
 | Black | the display stays on with nothing on it |
 | Web address | any page, e.g. a CarPlay dongle player |
@@ -198,6 +201,23 @@ carhud screens rotate DSI-1 left       turn a display
 carhud screens identify                each display shows its name for 5 s
 ```
 Changes swap instantly. Each display runs one page (`/display?output=NAME`) that changes its content without restarting.
+
+## 3.5" touch LCD on the header pins
+The cheap 3.5" SPI touch screens that plug straight onto the Pi's 40 pins (Waveshare 3.5" A/B/C and their clones: Kuman, Elegoo, iUniker, "MPI3501", MHS-3.5) work as one more screen, called **LCD**. It's meant for debugging: it shows the **debug console** (status, Wi-Fi and address, power, OBD and phone state, live values, the log, and big buttons for source, reconnect OBD, reload screens, hotspot, restart, reboot), and you can switch it to anything else, including a **Terminal**.
+
+```
+carhud lcd list                        the models
+sudo carhud lcd setup waveshare35a     turn it on (landscape; add 270 for upside down)
+sudo reboot
+carhud lcd                             is it working
+carhud lcd test                        colour bars
+carhud lcd calibrate                   tap 5 crosses if the touch is off
+```
+Or use the control panel's **3.5" LCD** card. You don't need the vendor's `LCD-show` scripts: they switch the Pi's graphics off for HDMI. If you ran them before, `carhud lcd` lists what to undo.
+
+- **Which model?** Most no-name boards marked "3.5inch RPi LCD" are Waveshare (A) clones. If the screen stays white or shows noise after the reboot, set up the next model (`tft35a`, then `waveshare35b`...).
+- **How it works:** the LCD's driver makes a framebuffer (`/dev/fb1`), not a display X can use, so `carhud-screens` gives it a 480×320 area beside the other displays (below them on a Pi 3, whose screen can't be wider than 2048), opens its window there and copies that area to the LCD with ffmpeg (`LCD_FPS`, default 20; lower it if the Pi 3 is busy). Its touch is pointed at the same area.
+- It uses GPIO 17, 24 and 25 and the SPI pins; the OBD cable, USB sound card and Bluetooth aren't affected. It also covers the header, so other HATs won't fit.
 
 ## Sound output (car AUX)
 All sound goes to one output: phone music over Bluetooth, the desk's Music app and the test sound.
@@ -231,6 +251,7 @@ All in `/etc/carhud.conf`, with comments. Restart after changes: `sudo systemctl
 | `server/stream.js` | sends only changed pixels; a slow screen gets the newest picture, never a backlog |
 | `server/eva.js` | builds and runs the HUD app |
 | `server/obd/` | ELM327 driver, PID table, gear/boost/AFR maths |
+| `server/screens.js`, `server/lcd.js` | what each display shows; the SPI LCD and its touch mapping |
 | `server/phone/` | Bluetooth helper (Python + BlueZ D-Bus), GPS, route following |
 | `web/phone/` | the phone app and its setup page |
 | `web/` | control panel (`index.html`), HUD screen (`hud.html`), shared JS |
@@ -241,6 +262,7 @@ All in `/etc/carhud.conf`, with comments. Restart after changes: `sudo systemctl
 ### API
 `GET /api/state`, `/api/values`, `/api/obd`, `/api/settings`, `/api/logs`, `/api/system`
 `GET /api/phone`; `POST /api/phone/{discoverable,pair,media,volume,connect,disconnect,forget,notification,gps,route,route/clear,simulate,test-notification}`
+`GET /api/lcd`; `POST /api/lcd/{setup {model, rotate},off,test,calibrate,calibration {points},calibration/reset,region}`
 `POST /api/source {source}`, `/api/hold`, `/api/manual {values, reset}`, `/api/drive {value}`, `/api/setting {key, value}`, `/api/app/restart {rebuild}`, `/api/obd/reconnect`, `/api/displays/reload`, `/api/system/{update,screens,restart,reboot}`
 WebSocket `/ws`: `?target=hud` for the pixel stream; JSON messages `state`, `values`, `obd`, `settings`, `status`, `log` (with `?log=1`).
 

@@ -1,0 +1,154 @@
+#!/bin/bash
+# carhud-lcd: the small 3.5" touch screen that plugs onto the Pi's header pins (SPI, ILI9486 + XPT2046).
+#
+#   carhud-lcd list                       the screens it knows
+#   sudo carhud-lcd setup MODEL [ROTATE] [speed=HZ]
+#                                         turn it on (then reboot). ROTATE 0, 90 (default), 180 or 270
+#   sudo carhud-lcd off                   turn it off again (then reboot)
+#   carhud-lcd status                     is the driver loaded, which framebuffer, is the touch there
+#   carhud-lcd test                       colour bars on the LCD for 4 seconds
+#
+# Which model? Most cheap ones with "3.5inch RPi LCD" on the board are Waveshare (A) clones:
+#   waveshare35a     Waveshare 3.5" (A), and most clones (Kuman, Elegoo, iUniker, Osoyoo...)
+#   waveshare35b     Waveshare 3.5" (B) (IPS)          waveshare35b-v2  its 2nd revision
+#   waveshare35c     Waveshare 3.5" (C) "high speed" (125 MHz SPI)
+#   tft35a           the goodtft/"LCD35-show" ones (MPI3501)
+#   mhs35            MHS-3.5" (lcdwiki "MHS35-show", 125 MHz)
+# If the picture is garbled or white, try the next one; `sudo carhud-lcd setup MODEL` again and reboot.
+#
+# After a reboot the LCD shows up as a screen called "LCD" in the control panel (Screens) and shows the
+# debug console unless you choose something else there. You don't need the vendor's LCD-show scripts
+# (they replace the desktop's graphics setup); if you ran them before, this tells you what to undo.
+set -u
+CONF=${CARHUD_CONF:-/etc/carhud.conf}
+BOOT=/boot/firmware; [ -f "$BOOT/config.txt" ] || BOOT=/boot
+CONFIG_TXT=${CARHUD_CONFIG_TXT:-$BOOT/config.txt}
+OVERLAYS=${CARHUD_OVERLAYS:-$BOOT/overlays}
+BEGIN='# >>> CarHUD LCD (carhud-lcd; changes here are overwritten)'
+END='# <<< CarHUD LCD'
+
+declare -A URL NAME SPEED
+WS=https://raw.githubusercontent.com/waveshare/LCD-show/master
+GT=https://raw.githubusercontent.com/goodtft/LCD-show/master/usr
+URL[waveshare35a]=$WS/waveshare35a-overlay.dtb;        NAME[waveshare35a]='Waveshare 3.5" (A) and most clones';  SPEED[waveshare35a]=16000000
+URL[waveshare35b]=$WS/waveshare35b-overlay.dtb;        NAME[waveshare35b]='Waveshare 3.5" (B) IPS';              SPEED[waveshare35b]=15000000
+URL[waveshare35b-v2]=$WS/waveshare35b-v2-overlay.dtb;  NAME[waveshare35b-v2]='Waveshare 3.5" (B) rev 2';          SPEED[waveshare35b-v2]=15000000
+URL[waveshare35c]=$WS/waveshare35c-overlay.dtb;        NAME[waveshare35c]='Waveshare 3.5" (C) high speed';       SPEED[waveshare35c]=115000000
+URL[tft35a]=$GT/tft35a-overlay.dtb;                    NAME[tft35a]='goodtft / LCD35-show (MPI3501)';            SPEED[tft35a]=16000000
+URL[mhs35]=$GT/mhs35-overlay.dtb;                      NAME[mhs35]='MHS-3.5" (lcdwiki)';                         SPEED[mhs35]=115000000
+ORDER="waveshare35a waveshare35b waveshare35b-v2 waveshare35c tft35a mhs35"
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo carhud-lcd $*"; exit 1; }; }
+conf_set() {  # KEY VALUE in /etc/carhud.conf
+    [ -f "$CONF" ] || return 0
+    if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >> "$CONF"; fi
+}
+conf_get() { [ -r "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -1 | tr -d "\"'"; }
+
+lcd_fb() {    # the LCD's framebuffer, e.g. fb1
+    local f
+    for f in /sys/class/graphics/fb*; do
+        [ -r "$f/name" ] || continue
+        if grep -qiE 'ili9486|ili9488|ili9341|st7796|hx8357|fb_|fbtft' "$f/name" && ! grep -qiE 'vc4|drmfb' "$f/name"; then basename "$f"; return 0; fi
+    done
+    return 1
+}
+
+strip_block() {   # take our block out (and the blank lines it leaves at the end)
+    sed -i "/^# >>> CarHUD LCD/,/^# <<< CarHUD LCD/d" "$CONFIG_TXT"
+    sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$CONFIG_TXT"
+}
+
+leftovers() {  # things the vendor LCD-show scripts leave that fight with this setup
+    local warn=0
+    for f in /usr/share/X11/xorg.conf.d/99-fbturbo.conf /etc/X11/xorg.conf.d/99-fbturbo.conf; do
+        [ -f "$f" ] && { echo "  ! $f makes X draw only on the LCD (from LCD-show): sudo rm $f"; warn=1; }
+    done
+    if sed "/^# >>> CarHUD LCD/,/^# <<< CarHUD LCD/d" "$CONFIG_TXT" | grep -vE '^\s*#' | grep -qE '^\s*dtoverlay=(waveshare|tft35a|mhs35|piscreen|tft9341|mhs)'; then
+        echo "  ! $CONFIG_TXT has another LCD overlay outside the CarHUD block (from LCD-show); remove those dtoverlay= lines"; warn=1
+    fi
+    if grep -qE '^\s*#\s*dtoverlay=vc4-(f)?kms-v3d' "$CONFIG_TXT" && ! grep -qE '^\s*dtoverlay=vc4-(f)?kms-v3d' "$CONFIG_TXT"; then
+        echo "  ! the normal graphics driver (dtoverlay=vc4-kms-v3d) is commented out in $CONFIG_TXT (LCD-show does that): put it back"; warn=1
+    fi
+    [ "$warn" = 0 ] && echo "  no leftovers from the vendor LCD-show scripts"
+    true
+}
+
+case "${1:-status}" in
+list)
+    for m in $ORDER; do printf '  %-16s %s\n' "$m" "${NAME[$m]}"; done
+    ;;
+
+setup)
+    need_root "$@"
+    MODEL=${2:-}; ROT=90; SPD=""
+    [ -n "$MODEL" ] && [ -n "${URL[$MODEL]:-}" ] || { echo "Which screen? sudo carhud-lcd setup MODEL [ROTATE]"; "$0" list; exit 1; }
+    shift 2
+    for a in "$@"; do
+        case "$a" in
+            0|90|180|270) ROT=$a;;
+            speed=*) SPD=${a#speed=};;
+            *) echo "unknown: $a (ROTATE is 0, 90, 180 or 270; speed=HZ)"; exit 1;;
+        esac
+    done
+    [ -f "$CONFIG_TXT" ] || { echo "no $CONFIG_TXT: is this a Raspberry Pi?"; exit 1; }
+    mkdir -p "$OVERLAYS"
+    if [ ! -s "$OVERLAYS/$MODEL.dtbo" ] || [ "${CARHUD_LCD_REFETCH:-0}" = 1 ]; then
+        echo "Downloading the driver settings for ${NAME[$MODEL]}..."
+        tmp=$(mktemp)
+        if ! curl -fsSL --max-time 60 -o "$tmp" "${URL[$MODEL]}" || [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "Download failed (${URL[$MODEL]}). Is the Pi online?"; exit 1; fi
+        # a device-tree blob starts with d0 0d fe ed
+        if [ "$(head -c4 "$tmp" | od -An -tx1 | tr -d ' \n')" != d00dfeed ]; then rm -f "$tmp"; echo "That download isn't a device-tree overlay; try again later"; exit 1; fi
+        install -m 644 "$tmp" "$OVERLAYS/$MODEL.dtbo"; rm -f "$tmp"
+    fi
+    cp -n "$CONFIG_TXT" "$CONFIG_TXT.carhud-orig" 2>/dev/null || true
+    cp "$CONFIG_TXT" "$CONFIG_TXT.carhud-bak"
+    strip_block
+    line="dtoverlay=$MODEL,rotate=$ROT"; [ -n "$SPD" ] && line="$line,speed=$SPD"
+    # [all] so it isn't caught under an earlier [pi4] / [cm4] section
+    printf '\n%s\n[all]\ndtparam=spi=on\n%s\n%s\n' "$BEGIN" "$line" "$END" >> "$CONFIG_TXT"
+    conf_set LCD_MODEL "$MODEL"; conf_set LCD_ROTATE "$ROT"
+    command -v ffmpeg >/dev/null || { echo "Installing ffmpeg (copies the picture to the LCD)..."; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg >/dev/null || echo "WARNING: could not install ffmpeg: sudo apt install ffmpeg"; }
+    echo "LCD: ${NAME[$MODEL]}, turned ${ROT}° ($line in $CONFIG_TXT; the old one is $CONFIG_TXT.carhud-bak)"
+    echo "Checking for leftovers from the vendor scripts:"; leftovers
+    echo "Now reboot (sudo reboot). The LCD shows the CarHUD debug console; change it under Screens."
+    ;;
+
+off)
+    need_root "$@"
+    [ -f "$CONFIG_TXT" ] && { cp "$CONFIG_TXT" "$CONFIG_TXT.carhud-bak"; strip_block; }
+    conf_set LCD_MODEL ""
+    echo "LCD turned off in $CONFIG_TXT; reboot to finish (sudo reboot)"
+    ;;
+
+status)
+    model=$(conf_get LCD_MODEL); rot=$(conf_get LCD_ROTATE)
+    echo "set up:      ${model:-no} ${model:+(${NAME[$model]:-?}, ${rot:-90}°)}"
+    if [ -f "$CONFIG_TXT" ]; then
+        b=$(sed -n '/^# >>> CarHUD LCD/,/^# <<< CarHUD LCD/p' "$CONFIG_TXT" | grep dtoverlay)
+        echo "config.txt:  ${b:-no CarHUD LCD block}"
+    fi
+    if fb=$(lcd_fb); then
+        echo "driver:      loaded: /dev/$fb ($(cat "/sys/class/graphics/$fb/name"), $(cat "/sys/class/graphics/$fb/virtual_size" | tr , x), $(cat "/sys/class/graphics/$fb/bits_per_pixel") bit)"
+    else
+        echo "driver:      not loaded$( [ -n "$model" ] && echo ' (reboot after setup; if it still is not: dmesg | grep -iE "fbtft|ili94|spi")')"
+    fi
+    if grep -qiE 'ADS7846|XPT2046' /proc/bus/input/devices 2>/dev/null; then echo "touch:       found"; else echo "touch:       not found"; fi
+    if pgrep -f carhud-lcd-copy >/dev/null; then echo "picture:     being copied to the LCD"; else echo "picture:     not being copied (carhud-screens does that)"; fi
+    [ -f "$CONFIG_TXT" ] && { echo "leftovers:"; leftovers; }
+    ;;
+
+test)
+    fb=$(lcd_fb) || { echo "The LCD's driver isn't loaded (carhud-lcd status)"; exit 1; }
+    command -v ffmpeg >/dev/null || { echo "ffmpeg is not installed (sudo apt install ffmpeg)"; exit 1; }
+    read -r W H <<< "$(tr , ' ' < "/sys/class/graphics/$fb/virtual_size")"
+    bpp=$(cat "/sys/class/graphics/$fb/bits_per_pixel"); [ "$bpp" = 32 ] && pf=bgra || pf=rgb565le
+    pkill -STOP -f carhud-lcd-copy 2>/dev/null
+    timeout 6 ffmpeg -loglevel error -re -f lavfi -i "smptebars=size=${W}x${H}:rate=5" -t 4 -pix_fmt "$pf" -f fbdev "/dev/$fb"
+    rc=$?
+    pkill -CONT -f carhud-lcd-copy 2>/dev/null
+    [ $rc = 0 ] && echo "Colour bars shown on /dev/$fb (${W}x$H)" || { echo "Could not draw on /dev/$fb (is your user in the video group?)"; exit 1; }
+    ;;
+
+*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1;;
+esac

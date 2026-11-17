@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>CarHUD touch calibration</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #e4e6ea; font: 14px system-ui, sans-serif; overflow: hidden; user-select: none; touch-action: none; }
+  #msg { position: absolute; left: 0; right: 0; top: 40%; text-align: center; padding: 0 30px; }
+  #msg small { display: block; color: #8b919b; margin-top: 6px; font-size: 12px; }
+  .t { position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px; display: none; }
+  .t::before, .t::after { content: ''; position: absolute; background: #ff8a2a; }
+  .t::before { left: 17px; top: 0; width: 2px; height: 36px; }
+  .t::after { top: 17px; left: 0; height: 2px; width: 36px; }
+  .t.on { display: block; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { transform: scale(.7); } }
+  .hit { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #4cd07d; }
+</style>
+</head>
+<body>
+<div id="msg">Tap the centre of each cross<small>with a fingernail or stylus · nothing happens for 30 s → cancelled</small></div>
+<script>
+/* Touch calibration for the 3.5" LCD: four crosses; where each tap landed (with the current mapping) and
+ * where it should have, go to the server, which fits a correction and re-points the touch layer. */
+(function () {
+  const TARGETS = [[0.1, 0.12], [0.9, 0.12], [0.9, 0.88], [0.1, 0.88], [0.5, 0.5]];
+  const els = TARGETS.map(([x, y]) => { const e = document.createElement('div'); e.className = 't'; e.style.left = x * 100 + '%'; e.style.top = y * 100 + '%'; document.body.append(e); return e; });
+  const points = [];
+  let i = 0, timer = null, done = false;
+  const msg = document.getElementById('msg');
+  function finish(text) {
+    done = true; els.forEach((e) => e.classList.remove('on'));
+    msg.innerHTML = text;
+    setTimeout(() => { if (parent !== window) parent.postMessage('lcd-calibrated', '*'); }, 2500);
+  }
+  function arm() { clearTimeout(timer); timer = setTimeout(() => finish('Cancelled: no taps'), 30000); }
+  function next() { els.forEach((e, k) => e.classList.toggle('on', k === i)); arm(); }
+  document.addEventListener('pointerdown', (ev) => {
+    if (done) return;
+    ev.preventDefault();
+    const ox = ev.clientX / innerWidth, oy = ev.clientY / innerHeight;
+    const dot = document.createElement('div'); dot.className = 'hit'; dot.style.left = ev.clientX + 'px'; dot.style.top = ev.clientY + 'px'; document.body.append(dot);
+    points.push({ tx: TARGETS[i][0], ty: TARGETS[i][1], ox, oy });
+    if (++i < TARGETS.length) return next();
+    clearTimeout(timer);
+    fetch('/api/lcd/calibration', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ points }) })
+      .then((r) => r.json()).then((r) => finish(r.error ? 'Did not work: ' + r.error : 'Calibrated ✓<small>touch is re-pointed now</small>'))
+      .catch(() => finish('Could not reach the server'));
+  });
+  next();
+})();
+</script>
+</body>
+</html>

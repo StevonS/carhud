@@ -29,15 +29,17 @@
       case 'hud': return '/hud?mirror=' + (a.mirror ? 1 : 0) + '&flip=' + (a.flip ? 1 : 0) + '&bmw=' + (a.bmw ? 1 : 0);
       case 'desk': return '/desk/';
       case 'console': return '/?panel=1';
+      case 'debug': return '/debug';
       case 'gauges': return '/desk/apps/gauges/';
       case 'navigate': return '/desk/apps/navigate/';
       case 'phone': return '/desk/apps/phone/';
       case 'url': return a.url || null;
-      default: return null;          // blank, off, desktop: nothing
+      default: return null;          // blank, off, desktop, terminal (its own window): nothing
     }
   }
+  let calibrating = false;
   function show(a) {
-    const url = urlFor(a);
+    const url = calibrating ? '/lcd-calibrate' : urlFor(a);
     document.getElementById('wait').style.display = 'none';
     if (url === shownUrl) return;
     shownUrl = url;
@@ -49,11 +51,14 @@
     document.body.prepend(frame);
   }
 
-  const NAMES = { hud: 'HUD', desk: 'Desk', console: 'Console', gauges: 'Gauges', navigate: 'Navigation', phone: 'Phone & music', blank: 'Black', url: 'Web address', desktop: 'Desktop', off: 'Off' };
+  /* the LCD's touch calibration: four targets in place of the screen, then back */
+  window.addEventListener('message', (ev) => { if (ev.data === 'lcd-calibrated' && calibrating) { calibrating = false; show(last); } });
+  const NAMES = { hud: 'HUD', desk: 'Desk', console: 'Console', debug: 'Debug console', terminal: 'Terminal', gauges: 'Gauges', navigate: 'Navigation', phone: 'Phone & music', blank: 'Black', url: 'Web address', desktop: 'Desktop', off: 'Off' };
   let last = null, identTimer = null;
   CarHud.connect({ data: false, role: 'display' }, {
     message: (m) => {
       if (m.t === 'screens') { last = m.assignments[output]; show(last); }
+      else if (m.t === 'lcd-calibrate' && output === 'LCD') { calibrating = true; show(last); }
       else if (m.t === 'identify') {
         document.getElementById('identName').textContent = output;
         document.getElementById('identWhat').textContent = last ? NAMES[last.screen] || last.screen : '';
