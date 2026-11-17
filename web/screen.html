@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CarHUD Screen">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/screen.webmanifest">
+<link rel="apple-touch-icon" href="/phone/icon-180.png">
+<title>CarHUD Screen</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body { font: 15px system-ui, -apple-system, sans-serif; color: #e4e6ea; }
+  /* the HUD: the frame turns and sizes it, the canvas mirrors / flips it */
+  #frame { position: absolute; left: 50%; top: 50%; width: 100vw; height: 100vh; transform: translate(-50%, -50%) scale(var(--size, 1)) translateY(var(--shift, 0%)); }
+  /* a phone held (or locked) upright: the HUD turns to use the whole screen; Turn picks which way */
+  @media (orientation: portrait) {
+    #frame { width: 100vh; height: 100vw; transform: translate(-50%, -50%) rotate(90deg) scale(var(--size, 1)) translateY(var(--shift, 0%)); }
+    body.rotated #frame { transform: translate(-50%, -50%) rotate(-90deg) scale(var(--size, 1)) translateY(var(--shift, 0%)); }
+  }
+  canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+  body.mirror canvas { transform: scaleX(-1); } body.flip canvas { transform: scaleY(-1); } body.mirror.flip canvas { transform: scale(-1, -1); }
+  #dim { position: absolute; inset: 0; background: #000; opacity: var(--dim, 0); pointer-events: none; }
+  #lost { position: absolute; right: calc(env(safe-area-inset-right) + 12px); top: calc(env(safe-area-inset-top) + 12px); width: 12px; height: 12px; border-radius: 50%; background: #ff3b30; display: none; }
+  body.lost #lost { display: block; }
+  #stats { position: absolute; left: calc(env(safe-area-inset-left) + 10px); top: calc(env(safe-area-inset-top) + 8px); font: 12px monospace; color: #7fdc9a; background: rgba(0,0,0,.6); padding: 3px 6px; border-radius: 4px; display: none; white-space: pre; }
+  body.stats #stats { display: block; }
+  /* settings: a tap brings them up */
+  #panel { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 10px); transform: translateX(-50%); background: rgba(20,22,26,.96); border: 1px solid #2a2e35; border-radius: 16px; padding: 12px; display: none; max-width: calc(100vw - 20px); }
+  body.panel #panel { display: block; }
+  .rowp { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
+  .rowp + .rowp { margin-top: 8px; }
+  #panel button { font: inherit; color: #e4e6ea; background: #1b1e23; border: 1px solid #2a2e35; border-radius: 10px; padding: 10px 13px; min-width: 44px; }
+  #panel button.on { border-color: #ff8a2a; color: #ff8a2a; }
+  #panel .val { min-width: 54px; text-align: center; color: #8b919b; font-variant-numeric: tabular-nums; }
+  #panel .lbl { color: #8b919b; font-size: 13px; }
+  #tip { position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 14px); transform: translateX(-50%); background: rgba(20,22,26,.96); border: 1px solid #ff8a2a; border-radius: 12px; padding: 10px 14px; max-width: 90vw; text-align: center; display: none; }
+  #tip button { margin-left: 8px; font: inherit; color: #111; background: #ff8a2a; border: 0; border-radius: 8px; padding: 5px 10px; }
+</style>
+</head>
+<body>
+<div id="frame"><canvas id="c" width="800" height="480"></canvas></div>
+<div id="dim"></div>
+<div id="lost" title="no connection to the Pi"></div>
+<div id="stats"></div>
+<div id="tip"></div>
+<div id="panel">
+  <div class="rowp">
+    <button data-t="mirror">Mirror</button><button data-t="flip">Flip</button><button data-t="rotated" title="Upright phone: which way the HUD turns">Turn</button><button data-t="stats">Stats</button><button id="fs">Full screen</button>
+  </div>
+  <div class="rowp">
+    <span class="lbl">Size</span><button data-n="size" data-d="-0.05">−</button><span class="val" id="v_size"></span><button data-n="size" data-d="0.05">+</button>
+    <span class="lbl">Height</span><button data-n="shift" data-d="-4">↑</button><span class="val" id="v_shift"></span><button data-n="shift" data-d="4">↓</button>
+    <span class="lbl">Dim</span><button data-n="dim" data-d="-0.1">−</button><span class="val" id="v_dim"></span><button data-n="dim" data-d="0.1">+</button>
+  </div>
+  <div class="rowp"><button id="exit">Back to the app</button><button id="reset">Reset</button></div>
+</div>
+<script src="/js/carhud.js"></script>
+<script src="/js/navicon.js"></script>
+<script src="/js/hudview.js"></script>
+<script>
+/* The phone as the HUD screen. Add it to the home screen: it opens straight into the HUD, full screen.
+ * Lying flat on the dash under the windshield: turn on Mirror (and Flip or Turn to suit how it lies).
+ * Upright (or with rotation locked) the HUD turns sideways by itself to fill the screen.
+ * Tap the screen for the settings; they are remembered on this phone. */
+(function () {
+  const { connect, $ } = CarHud;
+  const body = document.body;
+  const DEF = { mirror: false, flip: false, rotated: false, stats: false, size: 1, shift: 0, dim: 0 };
+  const st = Object.assign({}, DEF, (() => { try { return JSON.parse(localStorage.getItem('carhud.screen') || '{}'); } catch (e) { return {}; } })());
+  const q = new URLSearchParams(location.search);
+  ['mirror', 'flip', 'rotated'].forEach((k) => { if (q.has(k)) st[k] = q.get(k) === '1'; });
+  const save = () => { try { localStorage.setItem('carhud.screen', JSON.stringify(st)); } catch (e) { /* private mode */ } };
+
+  function apply() {
+    ['mirror', 'flip', 'rotated', 'stats'].forEach((k) => { body.classList.toggle(k, !!st[k]); const b = document.querySelector('[data-t="' + k + '"]'); if (b) b.classList.toggle('on', !!st[k]); });
+    document.documentElement.style.setProperty('--size', st.size);
+    document.documentElement.style.setProperty('--shift', st.shift + '%');
+    document.documentElement.style.setProperty('--dim', st.dim);
+    $('#v_size').textContent = Math.round(st.size * 100) + '%';
+    $('#v_shift').textContent = (st.shift > 0 ? '+' : '') + st.shift;
+    $('#v_dim').textContent = Math.round(st.dim * 100) + '%';
+  }
+  apply();
+
+  /* the HUD itself */
+  const view = new HudView($('#c'), { target: 'hud' });
+  const link = connect({ target: 'hud', data: false, role: 'phone-screen' }, {
+    message: (m) => view.message(m), binary: (b) => view.binary(b),
+    open: () => body.classList.remove('lost'),
+  });
+  setInterval(() => {
+    body.classList.toggle('lost', !link.open && link.closedSince && Date.now() - link.closedSince > 2000);
+    if (st.stats) { const s = view.stats; $('#stats').textContent = s.fps + ' fps · ' + s.kbps + ' KB/s\nframe age ' + (s.age === null ? '--' : s.age + ' ms') + ' · rtt ' + (link.rtt === null ? '--' : link.rtt + ' ms'); }
+  }, 500);
+
+  /* full screen, landscape, screen on */
+  const standalone = window.navigator.standalone || matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
+  const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  async function goFull() {
+    try { if (!document.fullscreenElement && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { /* not allowed here */ }
+    try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch (e) { /* not allowed */ }
+    keepAwake();
+  }
+  let wake = null;
+  async function keepAwake() { if (wake || !navigator.wakeLock) return; try { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } catch (e) { /* needs a tap first */ } }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
+  keepAwake();
+
+  function tip(html) {
+    const t = $('#tip'); t.innerHTML = html + ' <button id="tipOk">OK</button>'; t.style.display = 'block';
+    $('#tipOk').onclick = (e) => { e.stopPropagation(); t.style.display = 'none'; try { localStorage.setItem('carhud.screenTip', '1'); } catch (x) { /* */ } };
+  }
+  let tipped = false; try { tipped = localStorage.getItem('carhud.screenTip') === '1'; } catch (e) { /* */ }
+  if (iOS && !standalone && !tipped) tip('For a true full screen: <b>Share → Add to Home Screen</b>, then open <b>CarHUD Screen</b> from there.');
+  else if (!iOS && !standalone && !tipped) tip('Tap the screen, then <b>Full screen</b>. Or add this page to the home screen.');
+
+  /* settings */
+  let hide = null;
+  function showPanel() { body.classList.add('panel'); clearTimeout(hide); hide = setTimeout(() => body.classList.remove('panel'), 5000); }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) { if (body.classList.contains('panel')) body.classList.remove('panel'); else { showPanel(); if (!iOS) goFull(); } keepAwake(); return; }
+    if (b.id === 'tipOk') return;
+    if (b.dataset.t) st[b.dataset.t] = !st[b.dataset.t];
+    else if (b.dataset.n) {
+      const lim = { size: [0.4, 1.3], shift: [-40, 40], dim: [0, 0.8] }[b.dataset.n];
+      st[b.dataset.n] = Math.round(Math.min(lim[1], Math.max(lim[0], st[b.dataset.n] + Number(b.dataset.d))) * 100) / 100;
+    } else if (b.id === 'fs') goFull();
+    else if (b.id === 'reset') Object.assign(st, DEF);
+    else if (b.id === 'exit') { location.href = q.get('back') === 'phone' || standalone ? '/phone/' : '/'; return; }
+    save(); apply(); showPanel();
+  });
+})();
+</script>
+</body>
+</html>

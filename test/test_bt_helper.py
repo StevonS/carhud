@@ -94,29 +94,40 @@ def main():
     print('pairing')
     agent = dbus.Interface(bus.get_object(h_name(bus, h), '/carhud/agent'), 'org.bluez.Agent1')
     result = {}
-    agent.RequestConfirmation(dbus.ObjectPath(DEV), dbus.UInt32(123456), reply_handler=lambda: result.update(ok=True),
-                              error_handler=lambda e: result.update(err=str(e)))
-    pump_until(lambda: False, 0.3)      # let the call go out
+
+    def request(code):
+        result.clear()
+        agent.RequestConfirmation(dbus.ObjectPath(DEV), dbus.UInt32(code), reply_handler=lambda: result.update(ok=True),
+                                  error_handler=lambda e: result.update(err=str(e)))
+        pump_until(lambda: False, 0.3)      # let the call go out
+
+    # 1. the pairing window is open (discoverable above): the phone is accepted by itself, code shown on screens
+    request(123456)
     req = h.wait(lambda m: m['t'] == 'pair-request')
-    print('        desk got: %s' % req)
-    check(req is not None and req['passkey'] == '123456' and 'iPhone' in req['name'], 'desk is asked to confirm code 123456 for the iPhone')
-    h.send({'t': 'pair-reply', 'accept': True})
+    print('        screens got: %s' % req)
+    check(req is not None and req.get('auto') and req['passkey'] == '123456' and 'iPhone' in req['name'], 'pairing window open: accepted by itself, code 123456 shown for the iPhone')
     done = h.wait(lambda m: m['t'] == 'pair-done')
     pump_until(lambda: result)
-    check(done and done['ok'] and result.get('ok'), 'accepting on the desk completes the pairing')
+    check(done and done['ok'] and result.get('ok'), 'the pairing completes with no screen needed')
     mock.PairDevice('hci0', ADDR)
     time.sleep(0.4)
     dprops = dbus.Interface(bus.get_object('org.bluez', DEV), dbus.PROPERTIES_IFACE)
     check(bool(dprops.Get('org.bluez.Device1', 'Trusted')), 'paired phone is trusted (reconnects by itself)')
 
-    result.clear()
-    agent.RequestConfirmation(dbus.ObjectPath(DEV), dbus.UInt32(999999), reply_handler=lambda: result.update(ok=True),
-                              error_handler=lambda e: result.update(err=str(e)))
-    pump_until(lambda: False, 0.3)
+    # 2. window closed: a screen has to say yes
+    h.send({'t': 'discoverable', 'on': False})
+    time.sleep(0.3)
+    request(222333)
+    req = h.wait(lambda m: m['t'] == 'pair-request')
+    check(req is not None and not req.get('auto') and req['passkey'] == '222333', 'window closed: the screens are asked to confirm code 222333')
+    h.send({'t': 'pair-reply', 'accept': True})
+    pump_until(lambda: result)
+    check(result.get('ok'), 'yes on a screen completes it')
+    request(999999)
     h.wait(lambda m: m['t'] == 'pair-request')
     h.send({'t': 'pair-reply', 'accept': False})
     pump_until(lambda: result)
-    check('err' in result and 'Rejected' in result['err'], 'declining on the desk rejects the pairing')
+    check('err' in result and 'Rejected' in result['err'], 'no on a screen rejects it')
 
     print('reconnect')
     st = h.wait(lambda m: m['t'] == 'state' and any(d['connected'] for d in m['devices']), timeout=6)

@@ -120,7 +120,8 @@ phone.on('change', (ps) => {
     const key = JSON.stringify(nav);
     if (key !== lastNavSent) { lastNavSent = key; broadcast(nav); }
 });
-phone.on('pair', (p) => { log('info', 'pairing: ' + p.name + ' shows ' + (p.passkey || '(no code)')); broadcast({ t: 'pair', pair: p }); });
+phone.on('pair', (p) => broadcast({ t: 'pair', pair: p }));
+phone.on('pair-done', (p) => broadcast({ t: 'pair-done', done: p }));
 phone.on('notification', (n) => broadcast({ t: 'notification', n }, (c) => c.wantsData));
 phone.on('gps', () => {
     reconsider('phone GPS');
@@ -179,7 +180,7 @@ setInterval(() => {
 }, 1000);
 
 /* ---------- HTTP ---------- */
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/svg+xml', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/svg+xml', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska' };
 const MEDIA_EXT = /\.(mp3|m4a|aac|ogg|flac|wav|mp4|webm|mkv)$/i;
 
 function isLocal(req) { const a = req.socket.remoteAddress || ''; return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'; }
@@ -328,7 +329,13 @@ const routes = {
     'POST /api/app/restart': async (req, res) => { const b = await body(req); json(res, 200, { ok: true }); eva.restart(b.rebuild ? 'rebuild requested' : 'restart requested', !!b.rebuild); },
     'POST /api/obd/reconnect': (req, res) => { obd.reconnect(); json(res, 200, { ok: true }); },
     'GET /api/phone': (req, res) => json(res, 200, Object.assign(phone.state(), { route: routeMsg().route, config: phoneConfig() })),
-    'POST /api/phone/discoverable': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'discoverable', on: b.on !== false, seconds: Number(b.seconds) || 180 }) ? 200 : 503, {}); },
+    'POST /api/phone/discoverable': async (req, res) => {
+        const b = await body(req);
+        if (!cfg.on('PHONE_BLUETOOTH')) return json(res, 503, { error: 'Bluetooth is off in the settings (PHONE_BLUETOOTH=0)' });
+        if (!phone.send({ t: 'discoverable', on: b.on !== false, seconds: Number(b.seconds) || 180 })) return json(res, 503, { error: "Bluetooth isn't running on the Pi: " + (phone.bt.error || 'starting up') });
+        if (!phone.bt.adapter) return json(res, 503, { error: 'No Bluetooth adapter found on the Pi' + (phone.bt.error ? ': ' + phone.bt.error : '') + '. Try: carhud phone --check' });
+        json(res, 200, { ok: true, name: phone.bt.adapter.name });
+    },
     'POST /api/phone/pair': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'pair-reply', accept: !!b.accept }) ? 200 : 503, {}); },
     'POST /api/phone/media': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'media', action: String(b.action) }) ? 200 : 503, {}); },
     'POST /api/phone/volume': async (req, res) => { const b = await body(req); json(res, phone.send({ t: 'volume', value: Number(b.value) }) ? 200 : 503, {}); },
@@ -397,9 +404,14 @@ const handler = async (req, res) => {
             return await routes[key](req, res);
         }
         if (req.method !== 'GET') { res.writeHead(404); return res.end(); }
+        // a phone opening the plain address (e.g. http://10.42.0.1 on the car hotspot) lands on the phone app
+        if (url === '/' && /iPhone|Android.+Mobile|Mobile Safari/.test(req.headers['user-agent'] || '') && !/[?&]panel/.test(req.url)) {
+            res.writeHead(302, { location: '/phone/' }); return res.end();
+        }
         if (url === '/favicon.ico') { res.writeHead(301, { location: '/favicon.svg' }); return res.end(); }
         if (url === '/') return sendFile(req, res, path.join(ROOT, 'web', 'index.html'));
         if (url === '/hud') return sendFile(req, res, path.join(ROOT, 'web', 'hud.html'));
+        if (url === '/screen') return sendFile(req, res, path.join(ROOT, 'web', 'screen.html'));
         if (url === '/phone') { res.writeHead(302, { location: '/phone/' }); return res.end(); }
         if (url === '/phone/carhud-ca.crt') {
             res.setHeader('content-disposition', 'attachment; filename="carhud-ca.crt"');
@@ -468,6 +480,14 @@ renderer.listen(() => {
         eva.start();
         if (cfg.on('OBD_ENABLE')) obd.start(); else log('info', 'OBD off (OBD_ENABLE=0)');
         phone.start();
+        // the plain address too (http://10.42.0.1, http://carhud.local): port 80 needs the service's
+        // CAP_NET_BIND_SERVICE, which the installer gives it
+        if (cfg.on('HTTP_PORT_80') && cfg.port !== 80) {
+            const plain = http.createServer(handler);
+            ws.attach(plain, (u) => u.split('?')[0] === '/ws', onWs);
+            plain.on('error', (e) => log(e.code === 'EACCES' ? 'info' : 'warn', 'port 80 not available (' + e.code + '): use port ' + cfg.port));
+            plain.listen(80, cfg.on('ALLOW_LAN') ? '0.0.0.0' : '127.0.0.1', () => log('info', 'also on port 80'));
+        }
         if (tlsServer) {
             tlsServer.on('error', (e) => log('warn', 'https server: ' + e.message));
             tlsServer.listen(Number(cfg.PHONE_HTTPS_PORT), cfg.on('ALLOW_LAN') ? '0.0.0.0' : '127.0.0.1', () => log('info', 'phone app on https port ' + cfg.PHONE_HTTPS_PORT));

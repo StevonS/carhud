@@ -14,7 +14,7 @@ class Phone extends EventEmitter {
     constructor(cfg) {
         super();
         this.cfg = cfg;
-        this.bt = { available: false, adapter: null, devices: [], media: null, volume: null };
+        this.bt = { available: false, adapter: null, devices: [], media: null, volume: null, error: null, errorAt: null };
         this.pairing = null;
         this.notifications = [];
         this.gps = null;
@@ -34,10 +34,11 @@ class Phone extends EventEmitter {
 
     /* ---------- Bluetooth helper ---------- */
     start() {
-        if (!this.cfg.on('PHONE_BLUETOOTH')) { this.log('info', 'bluetooth: off (PHONE_BLUETOOTH=0)'); return; }
+        if (!this.cfg.on('PHONE_BLUETOOTH')) { this.bt.error = 'off in the settings (PHONE_BLUETOOTH=0)'; this.log('info', 'bluetooth: off (PHONE_BLUETOOTH=0)'); return; }
         const env = Object.assign({}, process.env, {
             CARHUD_BT_NAME: this.cfg.PHONE_NAME, CARHUD_BT_ANCS: this.cfg.on('PHONE_NOTIFICATIONS') ? '1' : '0',
             CARHUD_BT_STATE: path.join(this.cfg.DATA_DIR, 'bluetooth.json'), CARHUD_BT_ADAPTER: this.cfg.PHONE_ADAPTER || '',
+            CARHUD_BT_AUTOPAIR: this.cfg.PHONE_PAIR_CONFIRM === '1' ? '0' : '1',
         });
         const c = spawn(this.cfg.PHONE_PYTHON || 'python3', ['-u', path.join(__dirname, 'bt_helper.py')], { stdio: ['pipe', 'pipe', 'pipe'], env });
         this.child = c;
@@ -55,6 +56,8 @@ class Phone extends EventEmitter {
             const why = /ModuleNotFoundError: No module named '(\w+)'/.exec(errText);
             if (why) this.log('error', 'bluetooth: python module "' + why[1] + '" missing (sudo apt install python3-dbus python3-gi), retrying in a minute');
             else this.log('warn', 'bluetooth helper stopped (code ' + code + ')' + (errText ? ': ' + errText.trim().split('\n').slice(-1)[0] : ''));
+            this.bt.error = why ? 'python module ' + why[1] + ' missing (sudo apt install python3-dbus python3-gi)' : 'the Bluetooth helper stopped' + (errText ? ': ' + errText.trim().split('\n').slice(-1)[0] : '');
+            this.bt.errorAt = Date.now();
             errText = '';
             const wait = why ? 60000 : this.backoff;
             this.backoff = Math.min(this.backoff * 2, 60000);
@@ -68,14 +71,25 @@ class Phone extends EventEmitter {
 
     _msg(m) {
         switch (m.t) {
-            case 'log': this.log(m.level, m.text); break;
+            case 'log':
+                this.log(m.level, m.text);
+                if (m.level === 'warn' || m.level === 'error') { this.bt.error = m.text.replace(/^bluetooth: /, ''); this.bt.errorAt = Date.now(); this.changed(); }
+                break;
             case 'state':
                 this.backoff = 2000;
                 Object.assign(this.bt, { available: true, adapter: m.adapter, devices: m.devices, media: m.media, volume: m.volume });
                 this.changed();
                 break;
-            case 'pair-request': this.pairing = m; this.emit('pair', m); this.changed(); break;
-            case 'pair-done': this.pairing = null; this.changed(); break;
+            case 'pair-request':
+                if (!m.auto) this.pairing = m;          // a question for the screens; auto ones are just news
+                this.lastPair = Object.assign({ at: Date.now() }, m);
+                this.emit('pair', m); this.changed();
+                break;
+            case 'pair-done':
+                this.pairing = null;
+                this.lastPair = Object.assign({}, this.lastPair || {}, { done: true, ok: m.ok, at: Date.now() });
+                this.emit('pair-done', m); this.changed();
+                break;
             case 'notification': {
                 const n = Object.assign({ at: Date.now() }, m); delete n.t;
                 const i = this.notifications.findIndex((x) => x.uid === n.uid);
@@ -150,7 +164,7 @@ class Phone extends EventEmitter {
     state() {
         const g = this.gps;
         return {
-            bt: this.bt, pairing: this.pairing, notifications: this.notifications.slice(0, 20),
+            bt: this.bt, pairing: this.pairing, lastPair: this.lastPair || null, notifications: this.notifications.slice(0, 20),
             gps: g ? Object.assign({ age: Date.now() - g.at, fresh: this.gpsFresh() }, g) : null,
             nav: this.nav.state(), simulating: this.nav.simulating,
         };

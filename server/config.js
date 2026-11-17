@@ -12,6 +12,7 @@ const HOME = os.homedir();
 
 const DEFAULTS = {
     HUD_PORT: '8078',
+    HTTP_PORT_80: '1',         // also answer on port 80, so http://10.42.0.1 and http://carhud.local work without :8078
     ALLOW_LAN: '1',            // 1: the control panel and displays are reachable from other devices on the network
     ALLOW_LAN_SYSTEM: '0',     // 1: update / restart / reboot allowed from other devices too
     HUD_SOURCE: 'auto',        // what drives the HUD at start: auto | demo | manual | obd   (auto = obd when an adapter is plugged in)
@@ -32,6 +33,7 @@ const DEFAULTS = {
     PHONE_BLUETOOTH: '1',      // the Bluetooth phone link (music, now playing, iPhone notifications)
     PHONE_NAME: 'CarHUD',      // what phones see
     PHONE_NOTIFICATIONS: '1',  // iPhone notifications over Bluetooth LE (ANCS)
+    PHONE_PAIR_CONFIRM: '0',   // 1: a screen must say yes to every pairing; 0: phones pair by themselves while the pairing window is open
     PHONE_ADAPTER: '',         // hci0 etc., empty = the first one
     PHONE_AUDIO_DEVICE: 'default',
     PHONE_PYTHON: 'python3',

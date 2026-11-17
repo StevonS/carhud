@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0
+- The phone as the HUD screen: `/screen` is a full-screen HUD page. Add it to the home screen and it
+  opens straight into the HUD with no browser bars. Tap for Mirror, Flip, Turn (upright phones), size,
+  height and dimming, all remembered per phone. Keeps the screen on and reconnects by itself.
+- Plain addresses: also answers on port 80, so `http://10.42.0.1` (car hotspot) and `http://carhud.local`
+  work. Phones opening the address land on the phone app.
+- Pairing fixed for setups without a desk screen: phones now pair by themselves while the pairing
+  window is open (you confirm the code on the phone). PHONE_PAIR_CONFIRM=1 asks a screen every time.
+  The prompt, code and errors show on the desk, the control panel, the phone app and `carhud pair`.
+- `carhud pair` follows the pairing live; `carhud phone --check` finds out why Bluetooth isn't working.
+- Pair buttons say what went wrong (Bluetooth off, not running, no adapter).
+
 ## 2.1.0
 - Phone link, a home-made CarPlay:
   - Bluetooth pairing confirmed on the desk, with auto-reconnect.

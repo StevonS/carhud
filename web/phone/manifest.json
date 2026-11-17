@@ -2,7 +2,7 @@
   "name": "CarHUD",
   "short_name": "CarHUD",
   "start_url": "/phone/",
-  "scope": "/phone/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0a0b0d",
   "theme_color": "#0a0b0d",

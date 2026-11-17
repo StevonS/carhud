@@ -61,6 +61,7 @@
   </section>
 </div>
 <script src="/js/carhud.js"></script>
+<script src="/js/pairing.js"></script>
 <script>
 (function () {
   const { api, connect, $, h } = CarHud;
@@ -71,7 +72,7 @@
   $('#vol').oninput = () => { dragVol = true; };
   $('#vol').onchange = () => { api('/api/phone/volume', { value: Number($('#vol').value) }); dragVol = false; };
   $('#clear').onclick = () => api('/api/phone/notifications/clear', {});
-  $('#pair').onclick = () => api('/api/phone/discoverable', { on: true, seconds: 180 });
+  $('#pair').onclick = () => CarHudPair.startPairing();
 
   api('/api/phone/config').then((c) => {
     const box = $('#appInfo');
@@ -85,7 +86,8 @@
     const bt = ph.bt || {};
     /* phones */
     const box = $('#phones'); box.innerHTML = '';
-    if (!bt.available) box.append(h('div', { class: 'empty' }, 'Bluetooth is not running on the Pi (see the log in the control panel).'));
+    if (!bt.available) box.append(h('div', { class: 'empty' }, 'Bluetooth is not running on the Pi' + (bt.error ? ': ' + bt.error : '') + '. On the Pi: carhud phone --check'));
+    else if (bt.error && Date.now() - bt.errorAt < 120000) box.append(h('div', { class: 'empty', style: 'color:var(--warn)' }, bt.error));
     else if (!bt.adapter) box.append(h('div', { class: 'empty' }, 'No Bluetooth adapter found.'));
     else if (!bt.devices.length) box.append(h('div', { class: 'empty' }, 'No phone paired yet.'));
     bt.devices.forEach((d) => box.append(h('div', { class: 'dev' },

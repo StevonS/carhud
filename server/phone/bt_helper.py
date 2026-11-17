@@ -55,6 +55,8 @@ WANT_ADAPTER = os.environ.get('CARHUD_BT_ADAPTER', '')
 ANCS_ON = os.environ.get('CARHUD_BT_ANCS', '1') == '1'
 STATE_FILE = os.environ.get('CARHUD_BT_STATE', os.path.expanduser('~/.carhud/bluetooth.json'))
 RECONNECT_EVERY = int(os.environ.get('CARHUD_BT_RECONNECT', '15'))
+# accept pairing by itself while the pairing window (Pair a phone) is open: you confirm the code on the phone
+AUTO_PAIR = os.environ.get('CARHUD_BT_AUTOPAIR', '1') == '1'
 
 
 def out(msg):
@@ -90,7 +92,8 @@ def ignore(*_):
 
 
 class Agent(dbus.service.Object):
-    """Pairing: the phone shows a code, the desk shows the same code, you tap Accept."""
+    """Pairing. While the pairing window you opened is on (Pair a phone), a phone that asks is accepted
+    and you confirm the code on the phone. Otherwise the screens ask (desk, control panel, phone app)."""
     PATH = '/carhud/agent'
 
     def __init__(self, bus, owner):
@@ -99,9 +102,19 @@ class Agent(dbus.service.Object):
         self.pending = None
 
     def _ask(self, device, passkey, ok, err):
+        d = self.owner.devices.get(str(device), {})
+        name = d.get('Alias') or d.get('Name') or 'a phone'
+        code = None if passkey is None else '%06d' % int(passkey)
+        if AUTO_PAIR and time.time() < self.owner.window_until:
+            log('info', 'pairing with %s%s: accepted (the pairing window is open)' % (name, ' (code %s)' % code if code else ''))
+            out({'t': 'pair-request', 'address': d.get('Address', ''), 'name': name, 'passkey': code, 'auto': True})
+            ok()
+            self.owner.trust(str(device))
+            out({'t': 'pair-done', 'ok': True, 'auto': True})
+            return
         if self.pending:
             self.pending['err'](dbus.exceptions.DBusException('busy', name='org.bluez.Error.Rejected'))
-        d = self.owner.devices.get(str(device), {})
+        log('info', 'pairing request from %s%s: waiting for a yes on a screen (30 s)' % (name, ' (code %s)' % code if code else ''))
         req = {'device': str(device), 'ok': ok, 'err': err}
         req['timer'] = GLib.timeout_add_seconds(30, self._timeout)
         self.pending = req
@@ -339,6 +352,7 @@ class Bt:
         self.emit_timer = None
         self.recent = self.load_recent()
         self.reconnecting = False
+        self.window_until = 0
         bus.add_signal_receiver(self.on_added, 'InterfacesAdded', OM, BLUEZ)
         bus.add_signal_receiver(self.on_removed, 'InterfacesRemoved', OM, BLUEZ)
         bus.add_signal_receiver(self.on_changed, 'PropertiesChanged', PROPS, BLUEZ, path_keyword='path')
@@ -615,7 +629,12 @@ class Bt:
         try:
             if t == 'discoverable':
                 secs = int(m.get('seconds', 180))
+                if not self.adapter:
+                    return log('error', 'no Bluetooth adapter, so phones cannot find the Pi (is Bluetooth blocked? try: carhud phone --check)')
+                self.window_until = time.time() + secs if m.get('on', True) else 0
                 ad = self.props_if(self.adapter)
+                ad.Set(ADAPTER, 'Powered', dbus.Boolean(True))
+                ad.Set(ADAPTER, 'Pairable', dbus.Boolean(True))
                 ad.Set(ADAPTER, 'DiscoverableTimeout', dbus.UInt32(secs))
                 ad.Set(ADAPTER, 'Discoverable', dbus.Boolean(bool(m.get('on', True))))
                 log('info', ('visible to phones for %d s' % secs) if m.get('on', True) else 'hidden from new phones')

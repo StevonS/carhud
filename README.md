@@ -54,7 +54,7 @@ Your settings, your desk apps (`~/carhud-apps`) and your music are never touched
 
 ## Using it
 
-### Control panel: `http://carhud.local:8078/`
+### Control panel: `http://carhud.local/` (or `:8078`)
 Open it from any device on the same network (`carhud url` prints the address).
 
 - **Live view** of the HUD with layer outlines, a road backdrop, a mirrored view, 1:1 size, a frame-rate limit for slow Wi-Fi, and screenshots. The stats show redraws, data rate, frame age and round trip.
@@ -74,6 +74,9 @@ Open it from any device on the same network (`carhud url` prints the address).
 - **HUD settings**: the HUD app's own settings (designs per mode, redline, shift point, alert limits, alert previews...).
 - **OBD-II**: adapter, protocol, battery voltage, poll rate, every PID with its update rate, and the live rpm-per-km/h used for the gear.
 - **Log** with level filter and search; **Streams** shows each connected screen and whether it is keeping up.
+
+### The phone as the HUD: `/screen`
+The full-screen HUD for a phone. See *Phone link* below.
 
 ### The HUD screen: `/hud`
 URL options: `?mirror=1` `?flip=1` `?bmw=1` (BMW speed zone) `?native=1` (1:1) `?stats=1` `?fps=15`.
@@ -111,7 +114,8 @@ carhud reload                     reload all screens
 carhud screens [--windowed|--stop]
 carhud gears 4.111 245/40R18 3.454 1.947 1.296 0.972 0.780 0.666
 carhud phone                      Bluetooth phone, music, GPS, route
-carhud pair                       let a new phone pair (3 min)
+carhud pair                       let a new phone pair (3 min), shows how it goes
+carhud phone --check              why Bluetooth / pairing isn't working
 carhud play|pause|next|prev
 carhud wifi [hotspot|home]
 carhud nav test [kmh]|stop|end    a test route and a pretend drive
@@ -143,10 +147,17 @@ On CAN cars (most since 2008) it asks for up to six readings per request, and fa
 Real CarPlay needs Apple's licensed chip, so CarHUD builds its own version from two connections. Both work with iPhone and Android.
 
 **Bluetooth** (pair once; the phone reconnects by itself):
-- **Pairing**: desk → Phone → *Pair a phone*, or `carhud pair`. Pick **CarHUD** in the phone's Bluetooth settings and confirm the same code on the phone and the desk.
+- **Pairing**: tap *Pair a phone* (desk Phone app, control panel or phone app), or run `carhud pair`. Within 3 minutes, pick **CarHUD** in the phone's Bluetooth settings and tap Pair on the phone. While that window is open the Pi accepts by itself, so no screen is needed. (`PHONE_PAIR_CONFIRM=1` makes a screen confirm every pairing.) If it doesn't work, run `carhud phone --check`.
 - **Music**: anything the phone plays comes out of the Pi (`PHONE_AUDIO_DEVICE`; the 3.5 mm jack is `plughw:CARD=Headphones`).
 - **Now playing**: song, artist, app and progress on the desk, with play/pause/skip and volume.
 - **iPhone notifications**: banners on the desk, including **Answer / Decline for calls**. On the iPhone, turn on *Share System Notifications* for CarHUD (Settings → Bluetooth → ⓘ). Android doesn't offer this to accessories.
+
+**The phone as the HUD screen** (no display needed): open `http://10.42.0.1/screen` on the car hotspot, or `http://carhud.local/screen` at home, or tap *Show HUD* in the phone app. Add it to the home screen (iPhone: Share → *Add to Home Screen*) and it opens straight into a full-screen HUD with no browser bars. Tap the screen for:
+- **Mirror**: for laying the phone on the dash under the windshield as a reflection HUD.
+- **Flip** and **Turn**: to suit how it lies. An upright phone turns the HUD sideways by itself.
+- **Size**, **Height** and **Dim**: for night.
+
+These are remembered on each phone. Set the phone's brightness to full, and Auto-Lock to Never if the screen still sleeps.
 
 **The phone app** over Wi-Fi: `https://carhud.local:8443/phone/`, or `https://10.42.0.1:8443/phone/` in the car:
 - **Show HUD**: the live HUD full-screen on the phone. Handy without a display, and with **Mirror** a phone lying on the dash works as a reflection HUD.

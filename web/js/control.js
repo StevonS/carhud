@@ -27,10 +27,11 @@
     'Knock': { knock: 7, rpm: 4800, speed: 95, gear: 3, pedal: 90 },
   };
   const SRC_NOTES = {
-    auto: 'Auto: OBD when the adapter is plugged in and answering, otherwise Demo.',
+    auto: 'Auto: OBD when the adapter answers, else the phone\'s GPS while it shares, else Demo.',
     demo: 'Demo: the HUD app\'s own 22 s loop (a drive, then each alert). It changes screens by itself; use Hold or Manual to stay on one.',
     manual: 'Manual: the HUD shows exactly the values below and holds them until you change them.',
     obd: 'OBD: live values from the car through the USB adapter. Engine off reads as parked.',
+    gps: 'GPS: speed and G from the phone app sharing its location. The gear shows 1 while moving (GPS can\'t tell the gear).',
   };
 
   let st = {}, values = {}, settings = null;
@@ -80,7 +81,8 @@
     else if (m.t === 'log') addLog(m);
     else if (m.t === 'obd') renderObd(m.snap);
     else if (m.t === 'stats') renderStreams(m);
-    else if (m.t === 'phone') { phoneSt = m.phone; renderPhone(); }
+    else if (m.t === 'phone') { phoneSt = m.phone; renderPhone(); CarHudPair.handle(m); }
+    else if (m.t === 'pair' || m.t === 'pair-done') CarHudPair.handle(m);
     else if (m.t === 'nav') { navSt = m; renderPhone(); }
   }
 
@@ -91,7 +93,9 @@
     const bt = phoneSt.bt || {}, d = (bt.devices || []).find((x) => x.connected), g = phoneSt.gps, md = bt.media;
     const n = navSt && navSt.active ? navSt : null;
     kv($('#phoneInfo'), [
-      ['Bluetooth', !bt.available ? 'not running' : !bt.adapter ? 'no adapter' : (bt.adapter.discoverable ? 'visible to phones' : 'on') + ' as ' + bt.adapter.name],
+      ['Bluetooth', !bt.available ? 'not running' + (bt.error ? ': ' + bt.error : '') : !bt.adapter ? 'no adapter' : (bt.adapter.discoverable ? 'visible to phones' : 'on') + ' as ' + bt.adapter.name],
+      ['Last problem', bt.error && Date.now() - bt.errorAt < 300000 ? bt.error : null],
+      ['Last pairing', phoneSt.lastPair ? phoneSt.lastPair.name + (phoneSt.lastPair.passkey ? ' (code ' + phoneSt.lastPair.passkey + ')' : '') + (phoneSt.lastPair.done ? (phoneSt.lastPair.ok ? ': paired' : ': failed') : ': in progress') : null],
       ['Phone', d ? d.name + (d.battery !== null && d.battery !== undefined ? ' · ' + d.battery + '%' : '') + (d.notifications ? ' · notifications' : '') : (bt.devices || []).length ? 'paired, not connected' : 'none paired'],
       ['Playing', md && md.title ? md.title + (md.artist ? ' · ' + md.artist : '') + ' (' + md.status + ')' : null],
       ['GPS', g ? (g.fresh ? (g.sim ? 'simulated · ' : 'from the phone · ') + Math.round(g.speed || 0) + ' km/h' + (g.accuracy ? ' · ±' + Math.round(g.accuracy) + ' m' : '') : 'last fix ' + Math.round(g.age / 1000) + ' s ago') : 'no phone sharing'],
@@ -100,7 +104,7 @@
     ]);
     $('#bDrive').textContent = phoneSt.simulating ? 'Stop test drive' : 'Test drive';
   }
-  $('#bPair').onclick = () => api('/api/phone/discoverable', { on: true, seconds: 180 });
+  $('#bPair').onclick = () => CarHudPair.startPairing();
   $('#bNotif').onclick = () => api('/api/phone/test-notification', {});
   $('#bCall').onclick = () => api('/api/phone/test-notification', { call: true });
   $('#bEnd').onclick = () => api('/api/phone/route/clear', {});

@@ -24,11 +24,6 @@
   #toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; display: none; }
   #np { max-width: 34%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: 13px; cursor: pointer; }
   #pPhone { cursor: pointer; }
-  /* pairing: full-screen question */
-  #pair { position: absolute; inset: 0; background: rgba(5,6,8,.92); display: none; place-items: center; z-index: 20; text-align: center; }
-  #pair.show { display: grid; }
-  #pair .code { font-size: 64px; font-weight: 800; letter-spacing: .12em; color: var(--accent); font-variant-numeric: tabular-nums; margin: 10px 0; }
-  #pair button { font-size: 20px; padding: 14px 34px; margin: 10px 8px 0; }
   /* notifications: a banner over everything */
   #banners { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); width: min(560px, 94%); display: flex; flex-direction: column; gap: 8px; z-index: 15; pointer-events: none; }
   .banner { pointer-events: auto; background: rgba(27,30,35,.97); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; padding: 10px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.5); animation: drop .25s ease-out; }
@@ -54,11 +49,9 @@
   <div id="launcher"></div>
   <div id="toast"></div>
   <div id="banners"></div>
-  <div id="pair"><div><div style="font-size:18px">Pair with <b id="pairName"></b>?</div>
-    <div class="muted">Check the phone shows the same code.</div><div class="code" id="pairCode"></div>
-    <button class="primary" id="pairYes">Pair</button><button id="pairNo">Decline</button></div></div>
 </div>
 <script src="/js/carhud.js"></script>
+<script src="/js/pairing.js"></script>
 <script>
 /* The desk: a small launcher for the second screen. Apps are web pages in folders
  * (desk/apps/<id>/ built in, ~/carhud-apps/<id>/ your own), opened full-screen under the bar.
@@ -107,14 +100,6 @@
   const openApp = (id) => { const a = apps.find((x) => x.id === id); if (a) open(a); };
   $('#np').onclick = () => openApp('phone');
   $('#pPhone').onclick = () => openApp('phone');
-  $('#pairYes').onclick = () => { CarHud.api('/api/phone/pair', { accept: true }); $('#pair').classList.remove('show'); };
-  $('#pairNo').onclick = () => { CarHud.api('/api/phone/pair', { accept: false }); $('#pair').classList.remove('show'); };
-
-  function showPair(p) {
-    $('#pair').classList.toggle('show', !!p);
-    if (!p) return;
-    $('#pairName').textContent = p.name; $('#pairCode').textContent = p.passkey || '';
-  }
   const banners = new Map(), seenCalls = new Set();
   function banner(n) {
     const call = n.category === 'incoming-call';
@@ -148,12 +133,12 @@
         if (d) { pp.className = 'pill ok'; pp.textContent = d.name + (d.battery !== null && d.battery !== undefined ? ' ' + d.battery + '%' : ''); }
         const md = bt.media;
         $('#np').textContent = md && md.title && md.status === 'playing' ? '♫ ' + md.title + (md.artist ? ' · ' + md.artist : '') : '';
-        showPair(m.phone.pairing);
+        CarHudPair.handle(m);
         const live = new Set((m.phone.notifications || []).map((x) => x.uid));
         Array.from(banners.keys()).forEach((uid) => { if (!live.has(uid)) drop(uid); });
         // a call that was already ringing when the desk (re)opened
         (m.phone.notifications || []).forEach((x) => { if (x.category === 'incoming-call' && !banners.has(x.uid) && !seenCalls.has(x.uid)) { seenCalls.add(x.uid); banner(x); } });
-      } else if (m.t === 'pair') showPair(m.pair);
+      } else if (m.t === 'pair' || m.t === 'pair-done') CarHudPair.handle(m);
       else if (m.t === 'notification') banner(m.n);
     },
   });

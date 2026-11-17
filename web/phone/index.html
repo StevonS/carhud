@@ -32,20 +32,6 @@
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .chips button { padding: 6px 10px; font-size: 14px; border-radius: 999px; }
   .hidden { display: none !important; }
-  /* the HUD on the phone: full screen, landscape */
-  #hudOverlay { position: fixed; inset: 0; background: #000; z-index: 50; display: none; }
-  #hudOverlay.show { display: block; }
-  #hudOverlay canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-  #hudOverlay.mirror canvas { transform: scaleX(-1); }
-  #hudOverlay.flip canvas { transform: scaleY(-1); }
-  #hudOverlay.mirror.flip canvas { transform: scale(-1, -1); }
-  #hudBar { z-index: 2; position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 12px); transform: translateX(-50%); display: flex; gap: 8px; transition: opacity .3s; }
-  #hudBar.fade { opacity: 0; pointer-events: none; }
-  #hudBar button { background: rgba(27,30,35,.9); padding: 10px 14px; font-size: 15px; }
-  #hudBar button.on { border-color: var(--accent); color: var(--accent); }
-  #hudStats { position: absolute; left: 10px; top: calc(env(safe-area-inset-top) + 8px); font: 12px monospace; color: #7fdc9a; background: rgba(0,0,0,.6); padding: 3px 6px; border-radius: 4px; }
-  #rotate { position: absolute; inset: 0; display: none; place-items: center; color: var(--dim); text-align: center; pointer-events: none; }
-  @media (orientation: portrait) { #hudOverlay.show #rotate { display: grid; } }
 </style>
 </head>
 <body>
@@ -65,7 +51,14 @@
 
 <section class="card">
   <div class="row2"><button id="showHud" class="primary">Show HUD</button><a href="/desk/" style="display:contents"><button>Open desk</button></a></div>
-  <div class="note">Show HUD fills this phone with the live HUD. Turn the phone sideways. Use Mirror to lay it on the dash under the windshield as a reflection HUD.</div>
+  <div class="note">Show HUD makes this phone the HUD screen, full screen. Tap it for Mirror (to lay it on the dash under the windshield), size, height and dimming. For no browser bars at all, add it to the home screen from that page.</div>
+</section>
+
+<section class="card">
+  <h2>Bluetooth</h2>
+  <div id="btLine" class="muted" style="font-size:14px">--</div>
+  <button id="pairBtn" class="wide" style="margin-top:10px">Pair this phone</button>
+  <div class="note">Opens pairing on the Pi for 3 minutes. Then on this phone: Settings → Bluetooth → CarHUD, and tap Pair.</div>
 </section>
 
 <section class="card" id="navCard">
@@ -83,16 +76,9 @@
   </div>
 </section>
 
-<div id="hudOverlay">
-  <canvas id="hudCanvas" width="800" height="480"></canvas>
-  <div id="rotate"><div>Turn the phone sideways<br>for a bigger HUD</div></div>
-  <div id="hudStats"></div>
-  <div id="hudBar"><button id="hMirror">Mirror</button><button id="hFlip">Flip</button><button id="hStats">Stats</button><button id="hClose">Close</button></div>
-</div>
-
 <script src="/js/carhud.js"></script>
 <script src="/js/navicon.js"></script>
-<script src="/js/hudview.js"></script>
+<script src="/js/pairing.js"></script>
 <script>
 /* The CarHUD phone app: shares the phone's GPS with the HUD and plans routes with the phone's own
  * internet (the Pi's hotspot has none), then the Pi follows the route and shows the turns. */
@@ -116,41 +102,19 @@
     message: (m) => {
       if (m.t === 'state') $('#hudSrc').textContent = 'HUD: ' + m.source;
       if (m.t === 'nav') { nav = m; renderNav(); }
+      if (m.t === 'pair' || m.t === 'pair-done') CarHudPair.handle(m);
+      if (m.t === 'phone') {
+        CarHudPair.handle(m);
+        const bt = m.phone.bt || {}, d = (bt.devices || []).find((x) => x.connected);
+        $('#btLine').textContent = !bt.available ? 'Bluetooth not running on the Pi' + (bt.error ? ': ' + bt.error : '') : !bt.adapter ? 'No Bluetooth adapter on the Pi' :
+          d ? 'Connected: ' + d.name : (bt.adapter.discoverable ? 'Pi is visible as "' + bt.adapter.name + '": pick it in Settings → Bluetooth' : (bt.devices || []).length ? 'Paired, not connected' : 'Not paired yet');
+      }
     },
   });
 
-  /* ---------- the HUD on this phone ---------- */
-  const ov = $('#hudOverlay');
-  let hudView = null, hudLink = null, barTimer = null, hudWake = null, statsTimer = null;
-  const prefs = (() => { try { return JSON.parse(localStorage.getItem('carhud.phoneHud') || '{}'); } catch (e) { return {}; } })();
-  const savePrefs = () => { try { localStorage.setItem('carhud.phoneHud', JSON.stringify(prefs)); } catch (e) { /* private */ } };
-  function showBar() { $('#hudBar').classList.remove('fade'); clearTimeout(barTimer); barTimer = setTimeout(() => $('#hudBar').classList.add('fade'), 3500); }
-  function syncToggles() {
-    ['mirror', 'flip'].forEach((k) => ov.classList.toggle(k, !!prefs[k]));
-    $('#hMirror').classList.toggle('on', !!prefs.mirror); $('#hFlip').classList.toggle('on', !!prefs.flip); $('#hStats').classList.toggle('on', !!prefs.stats);
-    $('#hudStats').style.display = prefs.stats ? '' : 'none';
-  }
-  $('#showHud').onclick = async () => {
-    ov.classList.add('show'); syncToggles(); showBar();
-    if (!hudView) {
-      hudView = new HudView($('#hudCanvas'), { target: 'hud' });
-      hudLink = connect({ target: 'hud', data: false }, { message: (m) => hudView.message(m), binary: (b) => hudView.binary(b) });
-    }
-    try { await document.documentElement.requestFullscreen(); } catch (e) { /* iPhone: add to home screen for full screen */ }
-    try { hudWake = await navigator.wakeLock.request('screen'); } catch (e) { /* not supported */ }
-    clearInterval(statsTimer);
-    statsTimer = setInterval(() => { const st = hudView.stats; $('#hudStats').textContent = st.fps + ' fps · ' + st.kbps + ' KB/s · rtt ' + (hudLink.rtt === null ? '--' : hudLink.rtt) + ' ms'; }, 500);
-  };
-  $('#hClose').onclick = (e) => {
-    e.stopPropagation(); ov.classList.remove('show'); clearInterval(statsTimer);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    if (hudWake) { hudWake.release(); hudWake = null; }
-    if (hudLink) { hudLink.close(); hudLink = null; hudView = null; }      // stop the stream while it isn't shown
-  };
-  [['hMirror', 'mirror'], ['hFlip', 'flip'], ['hStats', 'stats']].forEach(([id, k]) => {
-    $('#' + id).onclick = (e) => { e.stopPropagation(); prefs[k] = !prefs[k]; savePrefs(); syncToggles(); showBar(); };
-  });
-  ov.onclick = showBar;
+  /* ---------- the HUD on this phone: its own full-screen page ---------- */
+  $('#showHud').onclick = () => { location.href = '/screen?back=phone'; };
+  $('#pairBtn').onclick = () => CarHudPair.startPairing();
 
   /* ---------- location ---------- */
   function send(p) {
