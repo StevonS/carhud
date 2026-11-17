@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.4.1
+- LCD: the server remembers where the LCD's area is, so touch calibration still applies after a
+  `systemctl restart carhud` without re-doing the screen layout.
+
 ## 2.4.0
 - 3.5" SPI touch LCD on the header pins (Waveshare 3.5" A/B/C and clones, MHS-3.5, "LCD35-show" boards):
   `sudo carhud lcd setup <model>` and a reboot, or the control panel's 3.5" LCD card. It becomes a screen

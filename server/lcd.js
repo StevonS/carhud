@@ -30,8 +30,8 @@ class Lcd {
     constructor(cfg) {
         this.cfg = cfg;
         this.file = path.join(cfg.DATA_DIR, 'lcd-touch.json');
-        this.region = null;          // {x, y, w, h, sw, sh}: where carhud-screens put the LCD's area
         try { this.saved = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch (e) { this.saved = {}; }
+        this.region = this.saved.region || null;   // kept, so a server restart doesn't forget where the LCD is
     }
 
     /** the LCD's framebuffer, if the driver is loaded: {dev, name, width, height, bpp} */
@@ -86,6 +86,7 @@ class Lcd {
         this._save();
         return this.saved.correction;
     }
+    setRegion(r) { this.region = r; this.saved.region = r; this._save(); }
     resetCalibration() { delete this.saved.correction; this._save(); }
     _save() { fs.mkdirSync(path.dirname(this.file), { recursive: true }); fs.writeFileSync(this.file, JSON.stringify(this.saved, null, 1)); }
 

@@ -434,7 +434,7 @@ const routes = {
     'POST /api/lcd/region': async (req, res) => {
         const b = await body(req), r = {};
         for (const k of ['x', 'y', 'w', 'h', 'sw', 'sh']) { r[k] = Number(b[k]); if (!isFinite(r[k]) || (k !== 'x' && k !== 'y' && r[k] <= 0)) return json(res, 400, { error: 'bad ' + k }); }
-        lcd.region = r;
+        lcd.setRegion(r);
         screens.refresh();
         lcdTouch(() => json(res, 200, lcdInfo()));
     },
