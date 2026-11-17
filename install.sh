@@ -234,18 +234,18 @@ if command -v nmcli >/dev/null && systemctl is-active --quiet NetworkManager; th
     WIFI_IF=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi"{print $1; exit}')
     # what a Raspberry Pi's Wi-Fi chip needs for a WPA2 hotspot (NetworkManager's defaults fail on it)
     AP_CH=$(conf_get PHONE_AP_CHANNEL); AP_CH=${AP_CH:-6}
-    AP_FIX="802-11-wireless.channel $AP_CH wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.pmf disable ipv6.method disabled"
+    AP_FIX="802-11-wireless.channel $AP_CH 802-11-wireless-security.proto rsn 802-11-wireless-security.pairwise ccmp 802-11-wireless-security.group ccmp 802-11-wireless-security.pmf disable ipv6.method disabled"
     command -v dnsmasq >/dev/null || [ -x /usr/sbin/dnsmasq ] || apt-get install -y --no-install-recommends dnsmasq-base || echo "WARNING: dnsmasq-base missing: the hotspot can't hand out addresses"
     ACTIVE_AP=$(nmcli -t -f NAME connection show --active | grep -x carhud-ap || true)
     if [ "$AP_MODE" != off ] && [ -n "$WIFI_IF" ]; then
         PRIO=-100; [ "$AP_MODE" = on ] && PRIO=100
         if nmcli -t -f NAME connection show | grep -qx carhud-ap; then
             # change it in place: deleting it would drop phones connected to it right now
-            nmcli connection modify carhud-ap 802-11-wireless.ssid "$AP_SSID" wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX
+            nmcli connection modify carhud-ap 802-11-wireless.ssid "$AP_SSID" 802-11-wireless-security.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX
         else
             nmcli connection add type wifi ifname "$WIFI_IF" con-name carhud-ap autoconnect yes ssid "$AP_SSID" \
                 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared ipv4.addresses 10.42.0.1/24 \
-                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX >/dev/null
+                802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX >/dev/null
         fi
         echo "hotspot \"$AP_SSID\" ready (PHONE_AP=$AP_MODE)${ACTIVE_AP:+, on now}"
         if iw reg get 2>/dev/null | awk '/^country/ {print $2; exit}' | grep -q '^00'; then echo "WARNING: no Wi-Fi country set (sudo raspi-config → Localisation Options → WLAN Country): the hotspot can't start"; fi

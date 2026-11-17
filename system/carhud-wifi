@@ -38,8 +38,8 @@ mkdir -p "$STATE"
 fix_profile() {
     nmcli connection modify "$CON" connection.interface-name "$IF" 802-11-wireless.ssid "$SSID" 802-11-wireless.mode ap \
         802-11-wireless.band bg 802-11-wireless.channel "$CH" 802-11-wireless.powersave 2 \
-        wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.pmf disable \
-        wifi-sec.psk "$PASS" wifi-sec.psk-flags 0 ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled 2>&1
+        802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.proto rsn 802-11-wireless-security.pairwise ccmp 802-11-wireless-security.group ccmp 802-11-wireless-security.pmf disable \
+        802-11-wireless-security.psk "$PASS" 802-11-wireless-security.psk-flags 0 ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled 2>&1
 }
 make_test() {
     nmcli connection delete "$TEST" >/dev/null 2>&1
@@ -95,7 +95,7 @@ case "${1:-status}" in
         if has_con "$CON"; then
             real=$(nmcli -s -g 802-11-wireless-security.psk connection show "$CON" 2>/dev/null)
             echo "hotspot: \"$(nmcli -g 802-11-wireless.ssid connection show "$CON")\"   password: $real$( [ "$real" != "$PASS" ] && echo "   (settings file says $PASS: carhud wifi hotspot fixes this)")"
-            nmcli -g wifi-sec.proto,wifi-sec.pairwise,wifi-sec.pmf,802-11-wireless.channel,ipv4.method connection show "$CON" | paste -sd' ' | sed 's/^/security: proto pairwise pmf channel ipv4 = /'
+            nmcli -g 802-11-wireless-security.proto,802-11-wireless-security.pairwise,802-11-wireless-security.pmf,802-11-wireless.channel,ipv4.method connection show "$CON" | paste -sd' ' | sed 's/^/security: proto pairwise pmf channel ipv4 = /'
         else
             echo "hotspot profile: missing (carhud update makes it)"
         fi

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.3
+- Hotspot: full NetworkManager setting names (802-11-wireless-security.*) everywhere. `carhud wifi` failed
+  with "invalid field 'wifi-sec.proto'": nmcli only accepts the short alias when changing settings,
+  not when reading them.
+
 ## 2.2.2
 - Hotspot: the way back to home Wi-Fi is a systemd timer (carhud-wifi-return), so it happens even when
   the background switch is gone, and returns to the exact network the Pi was on.
