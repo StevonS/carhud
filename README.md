@@ -111,7 +111,9 @@ carhud watch                      live values
 carhud log -f                     follow the log
 carhud restart [--rebuild]        restart the HUD app
 carhud reload                     reload all screens
-carhud screens [--windowed|--stop]
+carhud screens [set|rotate|identify]   what each display shows (see Screens)
+carhud screens --windowed|--stop
+carhud audio [set <id|auto>|test|volume N]   sound output (car AUX)
 carhud gears 4.111 245/40R18 3.454 1.947 1.296 0.972 0.780 0.666
 carhud phone                      Bluetooth phone, music, GPS, route
 carhud pair                       let a new phone pair (3 min), shows how it goes
@@ -172,6 +174,36 @@ These are remembered on each phone. Set the phone's brightness to full, and Auto
 **Testing without a phone or a car**: the control panel's *Phone & navigation* card, or `carhud nav test` (a 1.6 km loop and a pretend drive), plus *Test notification* / *Test call*. `python3 test/test_bt_helper.py` checks the Bluetooth side against a simulated BlueZ; it needs `pip install python-dbusmock`.
 
 **A real CarPlay dongle**: set `CARPLAY_URL` to its player and a CarPlay tile appears on the desk.
+
+## Screens
+Every display shows whatever you choose, and you can swap them at any time:
+
+| Screen | |
+|---|---|
+| HUD | the HUD, with Mirror / Flip per display |
+| Desk | the touch home screen |
+| Console | the control panel, for debugging on a display in the car |
+| Gauges, Navigation, Phone & music | one desk app, full screen |
+| Black | the display stays on with nothing on it |
+| Web address | any page, e.g. a CarPlay dongle player |
+| Desktop | no CarHUD window: the plain Pi desktop with its terminal |
+| Off | the display is turned off |
+
+Choose in the control panel (**Screens**), the desk's **System** app, or:
+```
+carhud screens                         what each display shows
+carhud screens set HDMI-1 console      e.g. the control panel on HDMI
+carhud screens set DSI-1 hud mirror    the HUD, mirrored, on the DSI screen
+carhud screens rotate DSI-1 left       turn a display
+carhud screens identify                each display shows its name for 5 s
+```
+Changes swap instantly. Each display runs one page (`/display?output=NAME`) that changes its content without restarting.
+
+## Sound output (car AUX)
+All sound goes to one output: phone music over Bluetooth, the desk's Music app and the test sound.
+- **Automatic** (the default) uses a **USB sound card** as soon as one is plugged in, otherwise the 3.5 mm jack. A USB sound card into the car's AUX input is the cleanest way to the car's speakers.
+- If you hear a whine that rises with engine speed, that's a ground loop. A **ground loop isolator** on the AUX cable fixes it.
+- Choose, test and set the volume in the control panel (**Sound output**), the desk's System app, or with `carhud audio`, `carhud audio set Device`, `carhud audio test` and `carhud audio volume 80`.
 
 ## Screens on a Pi 3
 One HDMI port and one DSI connector: the HUD goes on HDMI (a bright 800×480 panel is ideal), and the desk goes on DSI (e.g. the official 7" touchscreen, whose touch input is mapped to it automatically). Settings: `HUD_OUTPUT`, `DESK_OUTPUT`, `HUD_MIRROR`, `HUD_FLIP` in `/etc/carhud.conf`. With one monitor, `carhud screens --windowed` shows both as windows.

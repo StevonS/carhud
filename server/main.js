@@ -21,6 +21,7 @@ const { Elm327 } = require('./obd/elm327');
 const { Derive } = require('./obd/derive');
 const https = require('https');
 const { Phone } = require('./phone');
+const { Screens } = require('./screens');
 
 const cfg = config.load();
 const ROOT = cfg.ROOT;
@@ -138,6 +139,25 @@ function navMsg() {
         next: p.next && { index: p.next.index, type: p.next.type, modifier: p.next.modifier, name: p.next.name, distance: p.next.distance, text: p.next.text, exit: p.next.exit } };
 }
 function routeMsg() { const n = phone.nav.state(); return { t: 'route', route: n && { dest: n.dest, coords: n.coords, steps: n.steps, distance: n.distance, duration: n.duration } }; }
+
+/* ---------- screens: what each display shows ---------- */
+const screens = new Screens(cfg);
+screens.on('change', () => broadcast(screens.state()));
+const X_ENV = { DISPLAY: ':0', XAUTHORITY: path.join(os.homedir(), '.Xauthority') };
+function relayout(why, only) {
+    log('info', 'screens: ' + why);
+    runDetached('carhud-screens', only ? ['--only', only] : [], X_ENV);
+}
+
+/* ---------- audio output (the car's AUX through a USB sound card, the jack, HDMI) ---------- */
+function audioInfo(cb) {
+    execFile('carhud-audio', ['list', '--json'], { timeout: 5000 }, (err, out) => {
+        let info = { available: false, outputs: [], choice: 'auto', current: null };
+        if (!err) { try { info = Object.assign(JSON.parse(out), { available: true }); } catch (e) { /* bad output */ } }
+        else info.error = /ENOENT/.test(err.code || err.message) ? 'carhud-audio is not installed (carhud update)' : String(err.message).split('\n')[0];
+        execFile('carhud-audio', ['volume'], { timeout: 4000 }, (e2, v) => { info.volume = e2 ? null : parseInt(v, 10); cb(info); });
+    });
+}
 
 /* ---------- sources ---------- */
 function applySource() {
@@ -367,6 +387,35 @@ const routes = {
         json(res, 200, { ok: true });
     },
     'POST /api/system/restart': (req, res) => { json(res, 200, { ok: true }); setTimeout(() => runDetached('sudo', ['-n', 'systemctl', 'restart', 'carhud']), 200); },
+    'GET /api/screens': (req, res) => screens.refresh(() => json(res, 200, screens.state())),
+    'GET /api/screens/layout': (req, res) => screens.refresh(() => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(screens.layoutText()); }),
+    'POST /api/screens': async (req, res) => {
+        const b = await body(req);
+        let needs;
+        try { needs = screens.set(b.output, b); } catch (e) { return json(res, 400, { error: e.message }); }
+        const a = screens.assignments()[b.output];
+        if (needs === 'layout') relayout(b.output + ' → ' + a.screen + (a.rotate !== 'normal' ? ', rotated ' + a.rotate : '') + ': redoing the layout');
+        else if (needs === 'window') relayout(b.output + ' → ' + a.screen, b.output);
+        else log('info', 'screens: ' + b.output + ' → ' + a.screen);
+        json(res, 200, screens.state());
+    },
+    'POST /api/screens/identify': (req, res) => { broadcast({ t: 'identify', until: Date.now() + 5000 }); json(res, 200, {}); },
+    'POST /api/screens/relayout': (req, res) => { relayout('layout requested'); json(res, 200, {}); },
+    'GET /api/audio': (req, res) => audioInfo((i) => json(res, 200, i)),
+    'POST /api/audio': async (req, res) => {
+        const b = await body(req);
+        execFile('sudo', ['-n', 'carhud-audio', 'set', String(b.output || 'auto')], { timeout: 15000 }, (err, out, errOut) => {
+            const msg = String(out || '').trim().split('\n').pop();
+            if (err) return json(res, 400, { error: (String(errOut || '').trim() || msg || err.message).split('\n').slice(-1)[0] });
+            log('info', 'audio: ' + msg);
+            audioInfo((i) => json(res, 200, i));
+        });
+    },
+    'POST /api/audio/test': (req, res) => { execFile('carhud-audio', ['test'], { timeout: 8000 }, (err, out) => json(res, err ? 400 : 200, { result: String(out || err && err.message).trim() })); },
+    'POST /api/audio/volume': async (req, res) => {
+        const b = await body(req);
+        execFile('carhud-audio', ['volume', String(Math.max(0, Math.min(100, Number(b.value) || 0)))], { timeout: 4000 }, (err, out) => json(res, err ? 400 : 200, err ? { error: String(out || err.message).trim() } : { volume: parseInt(out, 10) }));
+    },
     'POST /api/system/wifi': async (req, res) => {
         const b = await body(req);
         // hotspot on now, or off (the Pi then joins a known Wi-Fi network by itself)
@@ -412,6 +461,7 @@ const handler = async (req, res) => {
         if (url === '/') return sendFile(req, res, path.join(ROOT, 'web', 'index.html'));
         if (url === '/hud') return sendFile(req, res, path.join(ROOT, 'web', 'hud.html'));
         if (url === '/screen') return sendFile(req, res, path.join(ROOT, 'web', 'screen.html'));
+        if (url === '/display') return sendFile(req, res, path.join(ROOT, 'web', 'display.html'));
         if (url === '/phone') { res.writeHead(302, { location: '/phone/' }); return res.end(); }
         if (url === '/phone/carhud-ca.crt') {
             res.setHeader('content-disposition', 'attachment; filename="carhud-ca.crt"');
@@ -464,6 +514,7 @@ const onWs = (c, req) => {
         c.send(routeMsg());
     }
     c.send(navMsg());
+    c.send(screens.state());
     if (c.wantsLog) logs.forEach((e) => c.send(e));
     const target = q.get('target');
     if (target && (TARGETS[target] || target === 'all')) { displays.add(c); streamer.add(c, target, Number(q.get('fps')) || 0); }

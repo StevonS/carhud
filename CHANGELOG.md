@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.0
+- Interchangeable screens: each display can show the HUD, the desk, the Console (control panel), Gauges,
+  Navigation, Phone & music, black, any web address, the plain Desktop (for a terminal and debugging), or
+  nothing (off). It can also be turned (rotated). Choose in the control panel's Screens card, the desk's
+  System app or with `carhud screens set <output> <screen>`. Most changes swap instantly with no window
+  restart; `carhud screens identify` shows each display's name on it.
+- Sound output (AUX): pick where all sound goes: a USB sound card for the car's AUX, the 3.5 mm jack or
+  HDMI. Automatic prefers a USB sound card the moment one is plugged in. Phone music and the browser play
+  at once (shared ALSA device). Test sound and volume in the control panel, the desk or `carhud audio`.
+
 ## 2.2.3
 - Hotspot: full NetworkManager setting names (802-11-wireless-security.*) everywhere. `carhud wifi` failed
   with "invalid field 'wifi-sec.proto'": nmcli only accepts the short alias when changing settings,

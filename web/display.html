@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CarHUD display</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  #ident { position: absolute; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.85); color: #fff; font: 700 9vmin system-ui, sans-serif; text-align: center; z-index: 5; }
+  #ident small { display: block; font-size: 4vmin; color: #ff8a2a; margin-top: 2vmin; font-weight: 600; }
+  body.ident #ident { display: grid; }
+  #wait { position: absolute; inset: 0; display: grid; place-items: center; color: #555; font: 15px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div id="wait">waiting for the CarHUD server...</div>
+<div id="ident"><div><span id="identName"></span><small id="identWhat"></small></div></div>
+<script src="/js/carhud.js"></script>
+<script>
+/* One physical display (/display?output=HDMI-1). It shows whatever is assigned to that output and
+ * swaps the moment the assignment changes (control panel → Screens, the desk's System app, carhud screens). */
+(function () {
+  const output = new URLSearchParams(location.search).get('output') || 'HDMI-1';
+  let frame = null, shownUrl = null;
+
+  function urlFor(a) {
+    if (!a) return null;
+    switch (a.screen) {
+      case 'hud': return '/hud?mirror=' + (a.mirror ? 1 : 0) + '&flip=' + (a.flip ? 1 : 0) + '&bmw=' + (a.bmw ? 1 : 0);
+      case 'desk': return '/desk/';
+      case 'console': return '/?panel=1';
+      case 'gauges': return '/desk/apps/gauges/';
+      case 'navigate': return '/desk/apps/navigate/';
+      case 'phone': return '/desk/apps/phone/';
+      case 'url': return a.url || null;
+      default: return null;          // blank, off, desktop: nothing
+    }
+  }
+  function show(a) {
+    const url = urlFor(a);
+    document.getElementById('wait').style.display = 'none';
+    if (url === shownUrl) return;
+    shownUrl = url;
+    if (frame) { frame.remove(); frame = null; }
+    if (!url) return;
+    frame = document.createElement('iframe');
+    frame.allow = 'autoplay; fullscreen';
+    frame.src = url;
+    document.body.prepend(frame);
+  }
+
+  const NAMES = { hud: 'HUD', desk: 'Desk', console: 'Console', gauges: 'Gauges', navigate: 'Navigation', phone: 'Phone & music', blank: 'Black', url: 'Web address', desktop: 'Desktop', off: 'Off' };
+  let last = null, identTimer = null;
+  CarHud.connect({ data: false, role: 'display' }, {
+    message: (m) => {
+      if (m.t === 'screens') { last = m.assignments[output]; show(last); }
+      else if (m.t === 'identify') {
+        document.getElementById('identName').textContent = output;
+        document.getElementById('identWhat').textContent = last ? NAMES[last.screen] || last.screen : '';
+        document.body.classList.add('ident');
+        clearTimeout(identTimer); identTimer = setTimeout(() => document.body.classList.remove('ident'), Math.max(1000, m.until - Date.now()));
+      }
+    },
+  });
+})();
+</script>
+</body>
+</html>

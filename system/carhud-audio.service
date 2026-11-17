@@ -1,0 +1,11 @@
+[Unit]
+Description=CarHUD: send sound to the chosen output (USB sound card / jack / HDMI)
+After=sound.target
+Before=carhud-btaudio.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/carhud-audio apply
+
+[Install]
+WantedBy=multi-user.target

@@ -40,7 +40,14 @@ const HELP = `carhud: control the car HUD
   carhud log [-f]               the server log (-f: keep following)
   carhud restart [--rebuild]    restart the HUD app (--rebuild: rebuild it first)
   carhud reload                 reload every HUD and desk screen
-  carhud screens [args]         reopen the screens (same as carhud-screens)
+  carhud screens                what each display shows
+  carhud screens set <out> <screen> [mirror|flip|url=...]   e.g. carhud screens set HDMI-1 console
+                                screens: hud desk console gauges navigate phone blank url desktop off
+  carhud screens rotate <out> <normal|left|right|inverted>
+  carhud screens identify       each display shows its name
+  carhud screens --windowed|--stop   reopen the windows (as windows / close them)
+  carhud audio                  sound outputs (USB sound card for the car's AUX, jack, HDMI)
+  carhud audio set <id|auto>    where the sound goes;  carhud audio test;  carhud audio volume 80
   carhud update                 get the newest CarHUD from GitHub and apply it
   carhud gears <final> <tyre> <ratio1> <ratio2> ...
                                 work out OBD_GEAR_RATIOS, e.g.
@@ -225,7 +232,46 @@ async function main() {
         }
         case 'restart': { await post('/api/app/restart', { rebuild: args[0] === '--rebuild' }); console.log('restarting the HUD app' + (args[0] === '--rebuild' ? ' (rebuilding)' : '')); return; }
         case 'reload': { await post('/api/displays/reload'); console.log('screens reloading'); return; }
-        case 'screens': { const r = spawnSync('carhud-screens', args, { stdio: 'inherit', env: Object.assign({ DISPLAY: ':0' }, process.env) }); process.exit(r.status || 0); }
+        case 'screens': {
+            // the window launcher's own options still go straight to it
+            if (!args.length || args[0] === 'list') {
+                const st = await get('/api/screens');
+                if (!st.x) { console.log("no displays: the Pi's desktop isn't running, or nothing is plugged in"); return; }
+                st.outputs.forEach((o) => {
+                    const a = st.assignments[o.name] || {};
+                    const extra = [a.screen === 'hud' && a.mirror ? 'mirror' : '', a.screen === 'hud' && a.flip ? 'flip' : '', a.rotate && a.rotate !== 'normal' ? 'turned ' + a.rotate : '', a.screen === 'url' ? a.url : ''].filter(Boolean).join(', ');
+                    console.log(pad(o.name, 10) + pad(o.width ? o.width + 'x' + o.height : 'off', 11) + pad(a.screen, 10) + (extra ? '(' + extra + ')' : ''));
+                });
+                console.log('\nscreens: ' + Object.keys(st.types).join(' | '));
+                console.log('change:  carhud screens set <output> <screen> [mirror|nomirror|flip|noflip|url=http://...]');
+                console.log('turn:    carhud screens rotate <output> normal|left|right|inverted     identify: carhud screens identify');
+                return;
+            }
+            if (args[0] === 'set') {
+                const [, output, screen, ...more] = args;
+                if (!output || !screen) throw new Error('carhud screens set <output> <screen>   (carhud screens lists both)');
+                const ch = { output, screen };
+                more.forEach((m) => { if (/^no(mirror|flip|bmw)$/.test(m)) ch[m.slice(2)] = false; else if (/^(mirror|flip|bmw)$/.test(m)) ch[m] = true; else if (m.startsWith('url=')) ch.url = m.slice(4); });
+                const r = await post('/api/screens', ch);
+                if (r.error) throw new Error(r.error);
+                console.log(output + ' now shows ' + (r.types[screen] || screen));
+                return;
+            }
+            if (args[0] === 'rotate') {
+                const r = await post('/api/screens', { output: args[1], rotate: args[2] || 'normal' });
+                if (r.error) throw new Error(r.error);
+                console.log(args[1] + ' turned ' + (args[2] || 'normal'));
+                return;
+            }
+            if (args[0] === 'identify') { await post('/api/screens/identify'); console.log('each display shows its name for 5 seconds'); return; }
+            const r = spawnSync('carhud-screens', args, { stdio: 'inherit', env: Object.assign({ DISPLAY: ':0' }, process.env) });
+            process.exit(r.status || 0);
+        }
+        case 'audio': case 'sound': {
+            const r = spawnSync('carhud-audio', args.length ? args : ['list'], { stdio: 'inherit' });
+            if (r.error) throw new Error('carhud-audio not found: run carhud update');
+            process.exit(r.status || 0);
+        }
         case 'update': { const r = spawnSync(path.join(ROOT, 'system', 'carhud-update'), args, { stdio: 'inherit' }); process.exit(r.status || 0); }
         case 'url': {
             const s = await get('/api/system');

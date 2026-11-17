@@ -16,6 +16,8 @@
 </head>
 <body>
 <section class="card"><h2>This Pi</h2><div class="kv" id="info"></div></section>
+<section class="card"><h2>Screens</h2><div id="screensBox"></div></section>
+<section class="card"><h2>Sound output</h2><div id="audioBox"></div></section>
 <section class="card">
   <h2>Actions</h2>
   <div class="actions">
@@ -28,6 +30,8 @@
   <pre id="log"></pre>
 </section>
 <script src="/js/carhud.js"></script>
+<script src="/js/pairing.js"></script>
+<script src="/js/panels.js"></script>
 <script>
 (function () {
   const { api, $, h } = CarHud;
@@ -50,6 +54,9 @@
       rows.forEach(([k, v]) => box.append(h('span', {}, k), h('span', { class: /⚠/.test(v) ? 'warnbox' : '' }, v)));
     });
   }
+  const screensPanel = CarHudPanels.screens($('#screensBox'));
+  CarHudPanels.audio($('#audioBox'));
+  CarHud.connect({ data: false }, { message: (m) => { if (m.t === 'screens') screensPanel.update(m); } });
   let cfg = {}, hotspot = false;
   api('/api/phone/config').then((c) => { cfg = c; });
   load(); setInterval(load, 5000);

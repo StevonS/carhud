@@ -1,19 +1,21 @@
 #!/bin/bash
-# carhud-screens: lay out the screens and open the HUD and the desk on them.
+# carhud-screens: lay out the displays and open a CarHUD window on each.
 #
-#   carhud-screens              full-screen on each output (what runs at login)
-#   carhud-screens --windowed   both as normal windows, for testing on one monitor
-#   carhud-screens --stop       close both
+#   carhud-screens              every connected output, as assigned (what runs at login)
+#   carhud-screens --only NAME  redo one output's window (after it changed to or from "desktop")
+#   carhud-screens --windowed   one normal window per output, for testing on a single monitor
+#   carhud-screens --stop       close all CarHUD windows
 #
-# Settings: /etc/carhud.conf (HUD_OUTPUT, DESK_OUTPUT, HUD_MIRROR, HUD_FLIP, HUD_BMW_ZONE, HUD_PORT)
+# What each output shows is chosen in the control panel (Screens), the desk's System app or with
+# `carhud screens set <output> <screen>`. Each window is /display?output=NAME, which swaps its content by
+# itself when the choice changes. This script only places windows: "off" and rotation change the layout,
+# "desktop" means no window, so the plain desktop shows on that output.
 set -u
 CONF=${CARHUD_CONF:-/etc/carhud.conf}
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
-HUD_OUTPUT=${HUD_OUTPUT:-auto}
-DESK_OUTPUT=${DESK_OUTPUT:-${CARPLAY_OUTPUT:-auto}}      # CARPLAY_OUTPUT: its name before v2
-HUD_MIRROR=${HUD_MIRROR:-0}; HUD_FLIP=${HUD_FLIP:-0}; HUD_BMW_ZONE=${HUD_BMW_ZONE:-0}
 HUD_PORT=${HUD_PORT:-8078}
+BASE="http://127.0.0.1:$HUD_PORT"
 export DISPLAY=${DISPLAY:-:0}
 [ -z "${XAUTHORITY:-}" ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY="$HOME/.Xauthority"
 LOG=/tmp/carhud-screens.log
@@ -22,65 +24,95 @@ log() { echo "$(date +%T) $*" | tee -a "$LOG"; }
 CHROMIUM=$(command -v chromium || command -v chromium-browser || true)
 [ -n "$CHROMIUM" ] || { log "chromium is not installed"; exit 1; }
 
-pkill -f 'carhud-chromium-' 2>/dev/null; sleep 1
-[ "${1:-}" = "--stop" ] && { log "stopped"; exit 0; }
-WINDOWED=0; [ "${1:-}" = "--windowed" ] && WINDOWED=1
+MODE=all; ONLY=""
+case "${1:-}" in
+    --stop) pkill -f 'carhud-chromium-' 2>/dev/null; log "stopped"; exit 0;;
+    --windowed) MODE=windowed;;
+    --only) MODE=only; ONLY=${2:-}; [ -n "$ONLY" ] || { echo "--only needs an output name"; exit 1; };;
+    "") ;;
+    *) echo "usage: carhud-screens [--only NAME | --windowed | --stop]"; exit 1;;
+esac
 
 xset s off -dpms s noblank 2>/dev/null
-if [ $WINDOWED = 0 ] && command -v unclutter >/dev/null && ! pgrep -x unclutter >/dev/null; then unclutter -idle 1 -root & fi
+if [ "$MODE" != windowed ] && command -v unclutter >/dev/null && ! pgrep -x unclutter >/dev/null; then unclutter -idle 1 -root & fi
 
-connected() { xrandr --query | awk '/ connected/{print $1}'; }
+# the assignments from the carhud server ("NAME SCREEN ROTATE" per connected output)
+for _ in $(seq 1 60); do curl -s -o /dev/null "$BASE/api/state" && break; sleep 2; done
+LAYOUT=$(curl -s --max-time 8 "$BASE/api/screens/layout" || true)
+if [ -z "$LAYOUT" ]; then
+    # no server: HUD on the first HDMI output, desk on the others
+    log "carhud server not answering on port $HUD_PORT (sudo systemctl status carhud): default layout"
+    first=$(xrandr --query | awk '/ connected/ && $1 ~ /^HDMI/ {print $1; exit}')
+    LAYOUT=$(xrandr --query | awk -v f="$first" '/ connected/ {print $1, ($1==f || f=="" && NR<3 ? "hud" : "desk"), "normal"}')
+fi
+log "layout: $(echo "$LAYOUT" | paste -sd';')"
+
 geom() {      # WxH+X+Y of an output that is on
     xrandr --query | awk -v o="$1" '$1==o && / connected/ { for (i = 3; i <= NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) { print $i; exit } }'
 }
 split_geom() { local g=$1 r; W=${g%%x*}; r=${g#*x}; H=${r%%+*}; r=${r#*+}; X=${r%%+*}; Y=${r#*+}; }
 
-OUTS=$(connected)
-log "connected outputs: $(echo $OUTS)"
-HUD=$HUD_OUTPUT; DESK=$DESK_OUTPUT
-[ "$HUD" = auto ] && HUD=$(echo "$OUTS" | grep -m1 '^HDMI' || true)
-[ -z "$HUD" ] && HUD=$(echo "$OUTS" | head -n1)
-if [ "$DESK" = auto ]; then
-    DESK=$(echo "$OUTS" | grep '^DSI' | grep -vx "$HUD" | head -n1 || true)
-    [ -z "$DESK" ] && DESK=$(echo "$OUTS" | grep -vx "$HUD" | head -n1 || true)
-fi
-echo "$OUTS" | grep -qx "$HUD" || { log "HUD output '$HUD' is not connected"; HUD=""; }
-[ -n "$DESK" ] && ! echo "$OUTS" | grep -qx "$DESK" && { log "desk output '$DESK' is not connected"; DESK=""; }
-log "HUD -> ${HUD:-none}   desk -> ${DESK:-none}"
-
-[ -n "$HUD" ] && xrandr --output "$HUD" --auto --pos 0x0 --primary
-[ -n "$HUD" ] && [ -n "$DESK" ] && xrandr --output "$DESK" --auto --right-of "$HUD"
-sleep 1
-
-# a touchscreen (e.g. the official DSI display) belongs to the desk
-if [ -n "$DESK" ] && command -v xinput >/dev/null; then
-    xinput list --name-only 2>/dev/null | grep -iE 'touch|ft5x06|ft5406|raspberrypi-ts|goodix|ilitek' | while read -r dev; do
-        xinput map-to-output "$dev" "$DESK" 2>/dev/null && log "touch '$dev' -> $DESK"
-    done
-fi
-
-launch() {    # name url x y w h
-    local name=$1 url=$2 x=$3 y=$4 w=$5 h=$6
-    local args=("--user-data-dir=/tmp/carhud-chromium-$name" --no-first-run --noerrdialogs --disable-infobars
+launch() {    # output x y w h
+    local out=$1 x=$2 y=$3 w=$4 h=$5
+    pkill -f "carhud-chromium-$out( |$)" 2>/dev/null; sleep 0.3
+    local args=("--user-data-dir=/tmp/carhud-chromium-$out" --no-first-run --noerrdialogs --disable-infobars
         --disable-session-crashed-bubble --disable-features=Translate --password-store=basic --disable-pinch
         --overscroll-history-navigation=0 --check-for-update-interval=31536000 --ignore-gpu-blocklist
         --autoplay-policy=no-user-gesture-required "--window-position=$x,$y" "--window-size=$w,$h")
-    if [ $WINDOWED = 1 ]; then args+=("--app=$url"); else args+=(--kiosk "$url"); fi
-    NO_PROXY=127.0.0.1,localhost "$CHROMIUM" "${args[@]}" >"/tmp/carhud-$name.log" 2>&1 &
-    log "opened $name at ${w}x${h}+${x}+${y}"
+    local url="$BASE/display?output=$out"
+    if [ "$MODE" = windowed ]; then args+=("--app=$url"); else args+=(--kiosk "$url"); fi
+    NO_PROXY=127.0.0.1,localhost "$CHROMIUM" "${args[@]}" >"/tmp/carhud-$out.log" 2>&1 &
+    log "$out: window at ${w}x${h}+${x}+${y}"
 }
+close() { pkill -f "carhud-chromium-$1( |$)" 2>/dev/null && log "$1: window closed"; true; }
 
-# wait for the carhud server (the HUD app's first build on a Pi 3 takes a little while)
-for _ in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:$HUD_PORT/api/state" && break; sleep 2; done
-curl -s -o /dev/null "http://127.0.0.1:$HUD_PORT/api/state" || log "carhud server not answering on port $HUD_PORT (sudo systemctl status carhud)"
-
-url="http://127.0.0.1:$HUD_PORT/hud?mirror=$HUD_MIRROR&flip=$HUD_FLIP&bmw=$HUD_BMW_ZONE"
-desk="http://127.0.0.1:$HUD_PORT/desk/"
-if [ $WINDOWED = 1 ]; then
-    launch hud "$url" 0 0 800 480
-    launch desk "$desk" 820 0 800 480
+if [ "$MODE" = windowed ]; then
+    pkill -f 'carhud-chromium-' 2>/dev/null; sleep 0.5
+    x=0
+    while read -r out screen _rot; do
+        [ -z "$out" ] && continue
+        case "$screen" in off|desktop) continue;; esac
+        launch "$out" "$x" 0 800 480; x=$((x + 820))
+    done <<< "$LAYOUT"
     exit 0
 fi
-if [ -n "$HUD" ]; then split_geom "$(geom "$HUD")"; launch hud "$url" "$X" "$Y" "$W" "$H"; fi
-if [ -n "$DESK" ]; then split_geom "$(geom "$DESK")"; launch desk "$desk" "$X" "$Y" "$W" "$H"
-else log "no second screen connected: desk not opened (the control panel's HUD/Gauges are on http://<pi>:$HUD_PORT/desk/)"; fi
+
+if [ "$MODE" = only ]; then
+    line=$(echo "$LAYOUT" | awk -v o="$ONLY" '$1==o')
+    [ -n "$line" ] || { log "$ONLY: not connected"; exit 1; }
+    read -r out screen _rot <<< "$line"
+    case "$screen" in
+        off|desktop) close "$out";;
+        *) g=$(geom "$out"); [ -n "$g" ] || { log "$out is off: run carhud-screens"; exit 1; }; split_geom "$g"; launch "$out" "$X" "$Y" "$W" "$H";;
+    esac
+    exit 0
+fi
+
+# everything: outputs side by side in this order, each turned as chosen; then a window on each
+pkill -f 'carhud-chromium-' 2>/dev/null; sleep 0.5
+prev=""
+while read -r out screen rot; do
+    [ -z "$out" ] && continue
+    if [ "$screen" = off ]; then xrandr --output "$out" --off && log "$out: off"; continue; fi
+    if [ -z "$prev" ]; then xrandr --output "$out" --auto --rotate "${rot:-normal}" --pos 0x0 --primary
+    else xrandr --output "$out" --auto --rotate "${rot:-normal}" --right-of "$prev"; fi
+    prev=$out
+done <<< "$LAYOUT"
+sleep 1
+
+# a touchscreen (e.g. the official DSI display) belongs to the DSI output
+DSI=$(echo "$LAYOUT" | awk '$1 ~ /^DSI/ && $2 != "off" {print $1; exit}')
+if [ -n "$DSI" ] && command -v xinput >/dev/null; then
+    xinput list --name-only 2>/dev/null | grep -iE 'touch|ft5x06|ft5406|raspberrypi-ts|goodix|ilitek' | while read -r dev; do
+        xinput map-to-output "$dev" "$DSI" 2>/dev/null && log "touch '$dev' -> $DSI"
+    done
+fi
+
+while read -r out screen _rot; do
+    [ -z "$out" ] && continue
+    case "$screen" in
+        off) ;;
+        desktop) log "$out: desktop (no window)";;
+        *) g=$(geom "$out"); if [ -n "$g" ]; then split_geom "$g"; launch "$out" "$X" "$Y" "$W" "$H"; else log "$out: no picture size yet"; fi;;
+    esac
+done <<< "$LAYOUT"

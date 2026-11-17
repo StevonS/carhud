@@ -157,7 +157,7 @@ chown -R "$USER_NAME:$USER_NAME" "$EVA_DIR"
 # ---------------------------------------------------------------------------------------------
 step "6/10  Commands"
 chown -R "$USER_NAME:$USER_NAME" "$DIR"
-chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update" "$DIR/system/carhud-wifi"
+chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update" "$DIR/system/carhud-wifi" "$DIR/system/carhud-audio"
 # v1 copied these in; v2 links them to this checkout so updates reach them
 rm -f /usr/local/bin/carhud-screens /usr/local/bin/carhud-mode
 ln -sf "$DIR/bin/carhud" /usr/local/bin/carhud
@@ -165,6 +165,7 @@ ln -sf "$DIR/system/carhud-screens" /usr/local/bin/carhud-screens
 ln -sf "$DIR/system/carhud-mode" /usr/local/bin/carhud-mode
 ln -sf "$DIR/system/carhud-update" /usr/local/bin/carhud-update
 ln -sf "$DIR/system/carhud-wifi" /usr/local/bin/carhud-wifi
+ln -sf "$DIR/system/carhud-audio" /usr/local/bin/carhud-audio
 
 step "7/10  Desk apps, music folder, USB rules"
 sudo -u "$USER_NAME" mkdir -p "$USER_APPS" "$MEDIA"
@@ -219,6 +220,17 @@ if [ -n "$BA" ] && command -v bluealsa-aplay >/dev/null; then
 else
     echo "WARNING: bluez-alsa is not installed: phone music won't play through the Pi"
 fi
+
+# sound output: everything plays on the chosen output (auto: a USB sound card for the car's AUX when
+# plugged in, else the 3.5 mm jack). Set at boot, and again whenever a sound card comes or goes.
+install -m 644 "$DIR/system/carhud-audio.service" /etc/systemd/system/carhud-audio.service
+printf '%s\n' '# CarHUD: re-pick the sound output when a sound card is plugged in or out' \
+    'SUBSYSTEM=="sound", KERNEL=="controlC*", ACTION=="add|remove", RUN+="/usr/bin/systemd-run --no-block --on-active=3 /usr/local/bin/carhud-audio apply"' \
+    > /etc/udev/rules.d/53-carhud-audio.rules
+udevadm control --reload-rules || true
+systemctl daemon-reload
+systemctl enable carhud-audio >/dev/null 2>&1 || true
+"$DIR/system/carhud-audio" apply || echo "WARNING: could not set the sound output (carhud audio)"
 
 # Wi-Fi hotspot for the phone app in the car (NetworkManager). Only added, never switched on here,
 # so an SSH session over Wi-Fi stays up. PHONE_AP=auto: used when no known Wi-Fi is in range.

@@ -1,0 +1,134 @@
+#!/bin/bash
+# carhud-audio: where the Pi's sound goes (phone music over Bluetooth, the desk's Music app, everything).
+#
+#   carhud-audio list            sound outputs: index, id, name, kind (usb = a USB sound card, e.g. for the car's AUX)
+#   carhud-audio list --json     the same for the server
+#   carhud-audio set <id|auto>   send all sound there (auto: a USB sound card when plugged in, else the 3.5 mm jack)
+#   carhud-audio apply           re-apply the saved choice (at boot, and when a sound card is plugged in or out)
+#   carhud-audio test            a short test sound on the current output
+#   carhud-audio volume [0-100]  show or set the output's volume
+#   carhud-audio status          the choice and what it resolves to
+#
+# The choice is saved in /var/lib/carhud/audio-output and written to /etc/asound.conf as the system's
+# default sound device, shared (dmix) so phone music and the browser can play at once.
+set -u
+STATE=/var/lib/carhud
+CHOICE_FILE=$STATE/audio-output
+ASOUND=${CARHUD_ASOUND:-/etc/asound.conf}
+SELF=$(readlink -f "$0")
+# only changing the system's default output needs root; listing, testing and volume work for the audio group
+case "${1:-status}" in set|apply) [ "$(id -u)" = 0 ] || exec sudo "$SELF" "$@";; esac
+
+# "index id kind name" per playback card, from aplay -l
+cards() {
+    aplay -l 2>/dev/null | sed -n 's/^card \([0-9]*\): \([^ ]*\) \[\([^]]*\)\].*/\1 \2 \3/p' | awk '!seen[$1]++' | while read -r idx id name; do
+        kind=other
+        if [ -e "/proc/asound/card$idx/usbid" ]; then kind=usb
+        elif [[ "$id" == vc4hdmi* || "$name" == *HDMI* ]]; then kind=hdmi
+        elif [[ "$id" == Headphones* || "$name" == *Headphones* || "$name" == *bcm2835* ]]; then kind=jack
+        fi
+        echo "$idx $id $kind $name"
+    done
+}
+choice() { cat "$CHOICE_FILE" 2>/dev/null || echo auto; }
+# the card a choice means right now (an id), or nothing
+resolve() {
+    local want=$1 list; list=$(cards)
+    if [ "$want" != auto ]; then echo "$list" | awk -v w="$want" '$2==w {print $2; exit}'; return; fi
+    local pick
+    pick=$(echo "$list" | awk '$3=="usb" {print $2; exit}')
+    [ -z "$pick" ] && pick=$(echo "$list" | awk '$3=="jack" {print $2; exit}')
+    [ -z "$pick" ] && pick=$(echo "$list" | awk 'NF {print $2; exit}')
+    echo "$pick"
+}
+kind_of() { cards | awk -v w="$1" '$2==w {print $3; exit}'; }
+log() { logger -t carhud-audio "$*" 2>/dev/null; echo "$*"; }
+
+write_asound() {
+    local card=$1 kind; kind=$(kind_of "$card")
+    {
+        echo "# Written by carhud-audio: the default sound output is \"$card\" ($kind). Change it with: carhud audio set <output>"
+        if [ "$kind" = hdmi ]; then
+            # HDMI on the Pi takes a special format: play through ALSA's hdmi plugin (one program at a time)
+            echo "pcm.!default { type plug slave.pcm \"hdmi:CARD=$card,DEV=0\" }"
+        else
+            # shared, so phone music and the browser can play at the same time
+            echo "pcm.carhud_out { type dmix ipc_key 51234 ipc_perm 0666 slave { pcm \"hw:CARD=$card,DEV=0\" rate 48000 channels 2 } }"
+            echo "pcm.!default { type plug slave.pcm \"carhud_out\" }"
+        fi
+        echo "ctl.!default { type hw card \"$card\" }"
+    } > "$ASOUND.new" && mv "$ASOUND.new" "$ASOUND"
+}
+
+apply() {
+    local want card; want=$(choice); card=$(resolve "$want")
+    if [ -z "$card" ]; then
+        log "no sound output for \"$want\" (not plugged in?)$( [ "$want" != auto ] && echo ': using auto until it is back')"
+        card=$(resolve auto)
+        [ -z "$card" ] && { log "no sound cards at all"; return 1; }
+    fi
+    local cur; cur=$(sed -n 's/.*default sound output is "\([^"]*\)".*/\1/p' "$ASOUND" 2>/dev/null)
+    if [ "$cur" != "$card" ]; then
+        write_asound "$card"
+        log "sound now goes to $card ($(kind_of "$card"))"
+        # programs holding the old device pick the new one up when restarted
+        systemctl try-restart carhud-btaudio >/dev/null 2>&1 || true
+    fi
+    # make sure it isn't muted at zero
+    mixer_ctl "$card" >/dev/null && amixer -q -c "$card" sset "$(mixer_ctl "$card")" unmute >/dev/null 2>&1 || true
+    return 0
+}
+
+# the card's main playback volume control
+mixer_ctl() {
+    amixer -c "$1" scontrols 2>/dev/null | sed -n "s/^Simple mixer control '\([^']*\)',0$/\1/p" | while read -r c; do
+        if amixer -c "$1" sget "$c" 2>/dev/null | grep -q 'pvolume'; then echo "$c"; break; fi
+    done | head -n1
+}
+
+case "${1:-status}" in
+    list)
+        if [ "${2:-}" = --json ]; then
+            cur=$(resolve "$(choice)")
+            printf '{"choice":"%s","current":"%s","outputs":[' "$(choice)" "$cur"
+            first=1
+            cards | while read -r idx id kind name; do
+                [ $first = 1 ] || printf ','; first=0
+                printf '{"index":%s,"id":"%s","kind":"%s","name":"%s"}' "$idx" "$id" "$kind" "$(echo "$name" | sed 's/"/\\"/g')"
+            done
+            printf ']}\n'
+        else
+            echo "choice: $(choice)   now: $(resolve "$(choice)")"
+            cards | while read -r idx id kind name; do printf '  %-14s %-6s %s\n' "$id" "$kind" "$name"; done
+        fi
+        ;;
+    status)
+        c=$(resolve "$(choice)")
+        echo "choice: $(choice)   now playing on: ${c:-nothing} $( [ -n "$c" ] && echo "($(kind_of "$c"))")"
+        [ -n "$c" ] && ctl=$(mixer_ctl "$c") && [ -n "$ctl" ] && echo "volume: $(amixer -c "$c" -M sget "$ctl" | grep -o '[0-9]*%' | head -n1) ($ctl)"
+        ;;
+    set)
+        want=${2:-}
+        [ -n "$want" ] || { echo "carhud-audio set <id|auto>   (ids: carhud-audio list)"; exit 1; }
+        if [ "$want" != auto ] && [ -z "$(resolve "$want")" ]; then echo "no output \"$want\" right now; outputs:"; cards | awk '{print "  " $2}'; exit 1; fi
+        mkdir -p "$STATE"; echo "$want" > "$CHOICE_FILE"
+        apply
+        ;;
+    apply) apply ;;
+    test)
+        c=$(resolve "$(choice)")
+        echo "test sound on ${c:-?}"
+        if [ -f /usr/share/sounds/alsa/Front_Center.wav ]; then
+            aplay -q -D default /usr/share/sounds/alsa/Front_Center.wav 2>&1 || timeout 3 speaker-test -q -D default -t sine -f 660 -l 1 -c 2 >/dev/null 2>&1
+        else
+            timeout 3 speaker-test -q -D default -t sine -f 660 -l 1 -c 2 >/dev/null 2>&1
+        fi
+        ;;
+    volume)
+        c=$(resolve "$(choice)"); ctl=$(mixer_ctl "$c")
+        [ -n "$ctl" ] || { echo "the output \"$c\" has no volume control (set the volume on the phone or the car)"; exit 1; }
+        if [ -n "${2:-}" ]; then amixer -q -c "$c" -M sset "$ctl" "${2}%" unmute; fi
+        amixer -c "$c" -M sget "$ctl" | grep -o '[0-9]*%' | head -n1
+        ;;
+    *) echo "usage: carhud-audio list [--json] | set <id|auto> | apply | test | volume [0-100] | status"; exit 1;;
+esac
