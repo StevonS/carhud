@@ -32,8 +32,9 @@ const HELP = `carhud: control the car HUD
   carhud play|pause|next|prev   the phone's music
   carhud wifi                   Wi-Fi status and the hotspot's settings
   carhud wifi hotspot [min]     switch to the car hotspot (min: back to home Wi-Fi after that long)
+  carhud wifi hotspot 10 open   a test hotspot with no password (rules out password problems)
   carhud wifi home              back to home Wi-Fi
-  carhud wifi log               what happened, and why a switch failed
+  carhud wifi log               what happened: why a switch failed, each phone's attempt to join
   carhud nav test [kmh]|stop|end   a test route where you are and a pretend drive along it
   carhud watch                  live values, refreshed (Ctrl+C to stop)
   carhud log [-f]               the server log (-f: keep following)

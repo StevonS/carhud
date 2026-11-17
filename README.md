@@ -117,7 +117,7 @@ carhud phone                      Bluetooth phone, music, GPS, route
 carhud pair                       let a new phone pair (3 min), shows how it goes
 carhud phone --check              why Bluetooth / pairing isn't working
 carhud play|pause|next|prev
-carhud wifi [hotspot [min]|home|log]
+carhud wifi [hotspot [min] [open]|home|log]
 carhud nav test [kmh]|stop|end    a test route and a pretend drive
 carhud update
 ```
@@ -165,7 +165,7 @@ These are remembered on each phone. Set the phone's brightness to full, and Auto
 - **Navigate**: search a place and the phone plans the route with its own mobile data (OpenStreetMap's Nominatim + OSRM). The Pi then follows it. The next turn and distance show on the HUD, where BMW's speed readout would be. The desk's **Navigate** app shows the turn, distance left, arrival time and a route map. Leaving the route makes the phone find a new one.
 - Keep the page open while driving: phones stop sharing location from background pages. The app keeps the screen on.
 
-**Wi-Fi in the car**: when no known network is in range, the Pi starts its own hotspot (`PHONE_AP=auto`). Its name and password are on the desk's System app, and in `/etc/carhud.conf`. Phones keep using mobile data for the internet while connected. Switch by hand with `carhud wifi hotspot` / `carhud wifi home`, or the System app. `carhud wifi hotspot 15` tries it for 15 minutes, then goes back to home Wi-Fi. If the hotspot doesn't start, the Pi goes back to home Wi-Fi within a minute, and `carhud wifi log` says why.
+**Wi-Fi in the car**: when no known network is in range, the Pi starts its own hotspot (`PHONE_AP=auto`). Its name and password are on the desk's System app, and in `/etc/carhud.conf`. Phones keep using mobile data for the internet while connected. Switch by hand with `carhud wifi hotspot` / `carhud wifi home`, or the System app. `carhud wifi hotspot 15` tries it for 15 minutes, then goes back to home Wi-Fi. If the hotspot doesn't start, the Pi goes back to home Wi-Fi within a minute, and `carhud wifi log` says why. The log also records each phone's attempt to join (refused for a wrong password, joined, got an address). If a phone can't join, `carhud wifi hotspot 10 open` starts a password-free test hotspot to narrow it down.
 
 **One-time phone setup** (for location): open `http://carhud.local:8078/phone/setup.html` (in the car: `http://10.42.0.1:8078/phone/setup.html`) and follow it. You install the Pi's certificate, because phones only share GPS with secure pages, then add the app to the home screen.
 

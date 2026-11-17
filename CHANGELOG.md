@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.2
+- Hotspot: the way back to home Wi-Fi is a systemd timer (carhud-wifi-return), so it happens even when
+  the background switch is gone, and returns to the exact network the Pi was on.
+- The hotspot's name and password are re-applied from /etc/carhud.conf on every switch, so the printed
+  password is the one in use. `carhud wifi` shows the real password and flags a mismatch.
+- While the hotspot runs, each phone's attempt to join is logged: refused for a wrong password, joined,
+  got an address (`carhud wifi log`).
+- `carhud wifi hotspot 10 open`: an open test hotspot "<name>-test", to rule password problems out.
+- No power saving on the hotspot; IPv6 off on it.
+
 ## 2.2.1
 - Hotspot fix: the hotspot profile now uses settings the Pi's Wi-Fi chip accepts (WPA2/CCMP only,
   protected management frames off, a fixed channel: PHONE_AP_CHANNEL, default 6). These are re-applied on
