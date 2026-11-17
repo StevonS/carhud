@@ -157,13 +157,14 @@ chown -R "$USER_NAME:$USER_NAME" "$EVA_DIR"
 # ---------------------------------------------------------------------------------------------
 step "6/10  Commands"
 chown -R "$USER_NAME:$USER_NAME" "$DIR"
-chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update"
+chmod +x "$DIR/bin/carhud" "$DIR/system/carhud-screens" "$DIR/system/carhud-mode" "$DIR/system/carhud-update" "$DIR/system/carhud-wifi"
 # v1 copied these in; v2 links them to this checkout so updates reach them
 rm -f /usr/local/bin/carhud-screens /usr/local/bin/carhud-mode
 ln -sf "$DIR/bin/carhud" /usr/local/bin/carhud
 ln -sf "$DIR/system/carhud-screens" /usr/local/bin/carhud-screens
 ln -sf "$DIR/system/carhud-mode" /usr/local/bin/carhud-mode
 ln -sf "$DIR/system/carhud-update" /usr/local/bin/carhud-update
+ln -sf "$DIR/system/carhud-wifi" /usr/local/bin/carhud-wifi
 
 step "7/10  Desk apps, music folder, USB rules"
 sudo -u "$USER_NAME" mkdir -p "$USER_APPS" "$MEDIA"
@@ -231,19 +232,23 @@ if [ -z "$AP_PASS" ]; then
 fi
 if command -v nmcli >/dev/null && systemctl is-active --quiet NetworkManager; then
     WIFI_IF=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi"{print $1; exit}')
+    # what a Raspberry Pi's Wi-Fi chip needs for a WPA2 hotspot (NetworkManager's defaults fail on it)
+    AP_CH=$(conf_get PHONE_AP_CHANNEL); AP_CH=${AP_CH:-6}
+    AP_FIX="802-11-wireless.channel $AP_CH wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.pmf disable ipv6.method disabled"
+    command -v dnsmasq >/dev/null || [ -x /usr/sbin/dnsmasq ] || apt-get install -y --no-install-recommends dnsmasq-base || echo "WARNING: dnsmasq-base missing: the hotspot can't hand out addresses"
     ACTIVE_AP=$(nmcli -t -f NAME connection show --active | grep -x carhud-ap || true)
     if [ "$AP_MODE" != off ] && [ -n "$WIFI_IF" ]; then
         PRIO=-100; [ "$AP_MODE" = on ] && PRIO=100
         if nmcli -t -f NAME connection show | grep -qx carhud-ap; then
             # change it in place: deleting it would drop phones connected to it right now
-            nmcli connection modify carhud-ap 802-11-wireless.ssid "$AP_SSID" wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO"
+            nmcli connection modify carhud-ap 802-11-wireless.ssid "$AP_SSID" wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX
         else
             nmcli connection add type wifi ifname "$WIFI_IF" con-name carhud-ap autoconnect yes ssid "$AP_SSID" \
                 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared ipv4.addresses 10.42.0.1/24 \
-                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" >/dev/null
+                wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX >/dev/null
         fi
         echo "hotspot \"$AP_SSID\" ready (PHONE_AP=$AP_MODE)${ACTIVE_AP:+, on now}"
-        if iw reg get 2>/dev/null | grep -q 'country 00'; then echo "WARNING: no Wi-Fi country set (sudo raspi-config → Localisation → WLAN Country): the hotspot may not start"; fi
+        if iw reg get 2>/dev/null | awk '/^country/ {print $2; exit}' | grep -q '^00'; then echo "WARNING: no Wi-Fi country set (sudo raspi-config → Localisation Options → WLAN Country): the hotspot can't start"; fi
     else
         [ -z "$ACTIVE_AP" ] && nmcli connection delete carhud-ap >/dev/null 2>&1 || true
         echo "hotspot off (PHONE_AP=$AP_MODE)"

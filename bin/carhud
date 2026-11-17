@@ -30,7 +30,10 @@ const HELP = `carhud: control the car HUD
   carhud phone --check          find out why Bluetooth / pairing isn't working
   carhud pair                   let a new phone pair for 3 minutes (confirm the code on the desk)
   carhud play|pause|next|prev   the phone's music
-  carhud wifi [hotspot|home]    Wi-Fi status, or switch to the car hotspot / back to home Wi-Fi
+  carhud wifi                   Wi-Fi status and the hotspot's settings
+  carhud wifi hotspot [min]     switch to the car hotspot (min: back to home Wi-Fi after that long)
+  carhud wifi home              back to home Wi-Fi
+  carhud wifi log               what happened, and why a switch failed
   carhud nav test [kmh]|stop|end   a test route where you are and a pretend drive along it
   carhud watch                  live values, refreshed (Ctrl+C to stop)
   carhud log [-f]               the server log (-f: keep following)
@@ -196,15 +199,10 @@ async function main() {
         }
         case 'play': case 'pause': case 'next': case 'prev': { await post('/api/phone/media', { action: cmd === 'prev' ? 'previous' : cmd }); console.log(cmd); return; }
         case 'wifi': {
-            if (args[0] === 'hotspot' || args[0] === 'home') {
-                const r = spawnSync('sudo', ['nmcli', 'connection', args[0] === 'hotspot' ? 'up' : 'down', 'carhud-ap'], { stdio: 'inherit' });
-                process.exit(r.status || 0);
-            }
-            const s = await get('/api/system'), c = await get('/api/phone/config');
-            console.log('Wi-Fi: ' + (!s.wifi ? 'unknown (no NetworkManager?)' : s.wifi.hotspot ? 'hotspot on' : (s.wifi.connection || 'not connected')));
-            console.log('hotspot: "' + c.apSsid + '" password ' + (c.apPassword || '(not set)') + ', mode ' + c.ap + ' (PHONE_AP)');
-            console.log('switch: carhud wifi hotspot | carhud wifi home');
-            return;
+            // carhud-wifi does the switching (as root, in the background so it survives SSH dropping)
+            const r = spawnSync('carhud-wifi', args.length ? args : ['status'], { stdio: 'inherit' });
+            if (r.error) throw new Error('carhud-wifi not found: run carhud update');
+            process.exit(r.status || 0);
         }
         case 'nav': {
             if (args[0] === 'end') { await post('/api/phone/route/clear'); console.log('route ended'); return; }

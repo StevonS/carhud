@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.1
+- Hotspot fix: the hotspot profile now uses settings the Pi's Wi-Fi chip accepts (WPA2/CCMP only,
+  protected management frames off, a fixed channel: PHONE_AP_CHANNEL, default 6). These are re-applied on
+  every switch, and dnsmasq is installed if missing.
+- `carhud wifi hotspot [minutes]` switches in the background, so it survives SSH dropping. It checks the
+  Wi-Fi country, dnsmasq and rfkill first, falls back to home Wi-Fi within a minute if the hotspot doesn't
+  come up, and writes what NetworkManager and the driver said to /var/log/carhud-wifi.log (`carhud wifi log`).
+  With minutes, it returns to home Wi-Fi by itself.
+
 ## 2.2.0
 - The phone as the HUD screen: `/screen` is a full-screen HUD page. Add it to the home screen and it
   opens straight into the HUD with no browser bars. Tap for Mirror, Flip, Turn (upright phones), size,

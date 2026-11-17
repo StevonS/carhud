@@ -370,7 +370,7 @@ const routes = {
     'POST /api/system/wifi': async (req, res) => {
         const b = await body(req);
         // hotspot on now, or off (the Pi then joins a known Wi-Fi network by itself)
-        const args = b.mode === 'ap' ? ['-n', 'nmcli', 'connection', 'up', 'carhud-ap'] : ['-n', 'nmcli', 'connection', 'down', 'carhud-ap'];
+        const args = ['-n', '/usr/local/bin/carhud-wifi', b.mode === 'ap' ? 'hotspot' : 'home'];
         json(res, 200, { ok: true });
         setTimeout(() => runDetached('sudo', args), 300);
         log('info', 'Wi-Fi: ' + (b.mode === 'ap' ? 'switching to the hotspot' : 'leaving the hotspot'));

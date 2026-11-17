@@ -1,0 +1,105 @@
+#!/bin/bash
+# carhud-wifi: switch the Pi between the car hotspot and home Wi-Fi, and record why when it fails.
+#
+#   carhud-wifi hotspot [minutes]   start the hotspot (minutes: go back to home Wi-Fi after that long)
+#   carhud-wifi home                leave the hotspot; the Pi joins a known Wi-Fi network by itself
+#   carhud-wifi status              what the Wi-Fi is doing now, and the hotspot's settings
+#   carhud-wifi log                 what happened the last times (read this after SSH drops)
+#
+# Switching drops SSH over Wi-Fi, so the switch runs in the background and writes to /var/log/carhud-wifi.log.
+# If the hotspot doesn't come up within 30 s, the Pi goes back to home Wi-Fi and the log says why.
+set -u
+CON=carhud-ap
+LOG=/var/log/carhud-wifi.log
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+CONF=${CARHUD_CONF:-/etc/carhud.conf}
+conf_get() { sed -n "s/^$1=//p" "$CONF" 2>/dev/null | tail -n1 | sed 's/^"\(.*\)"$/\1/'; }
+log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+wifi_if() { nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi"{print $1; exit}'; }
+active() { nmcli -t -f NAME,TYPE connection show --active | awk -F: '$2 ~ /wireless/ {print $1; exit}'; }
+country() { iw reg get 2>/dev/null | awk '/^country/ {print $2; exit}' | tr -d ':'; }
+
+command -v nmcli >/dev/null || { echo "NetworkManager (nmcli) is not installed: no hotspot"; exit 1; }
+IF=$(wifi_if)
+[ -n "$IF" ] || { echo "no Wi-Fi device found"; exit 1; }
+
+# The settings a Raspberry Pi's Wi-Fi chip needs for a working WPA2 hotspot. NetworkManager's defaults
+# (protected management frames "optional", WPA1+2) stop it starting or stop phones joining on brcmfmac.
+fix_profile() {
+    local ch; ch=$(conf_get PHONE_AP_CHANNEL); ch=${ch:-6}
+    nmcli connection modify "$CON" 802-11-wireless.mode ap 802-11-wireless.band bg 802-11-wireless.channel "$ch" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.pmf disable \
+        ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled connection.interface-name "$IF" 2>&1
+}
+
+checks() {
+    local ok=1
+    nmcli -t -f NAME connection show | grep -qx "$CON" || { log "PROBLEM: no hotspot profile '$CON' (run: carhud update, and check PHONE_AP isn't off)"; ok=0; }
+    command -v dnsmasq >/dev/null || [ -x /usr/sbin/dnsmasq ] || { log "PROBLEM: dnsmasq is missing; the hotspot needs it to hand out addresses (sudo apt install dnsmasq-base)"; ok=0; }
+    local c; c=$(country)
+    if [ -z "$c" ] || [ "$c" = 00 ]; then
+        log "PROBLEM: no Wi-Fi country set (sudo raspi-config → Localisation Options → WLAN Country); the hotspot can't start without one"
+        ok=0
+    fi
+    if rfkill list wifi 2>/dev/null | grep -q 'Soft blocked: yes'; then log "PROBLEM: Wi-Fi is blocked (sudo rfkill unblock wifi)"; ok=0; fi
+    if iw list 2>/dev/null | awk '/Supported interface modes/,/Band|valid interface/' | grep -q '\* AP$'; then :; else log "note: could not confirm the Wi-Fi chip supports hotspot mode"; fi
+    [ $ok = 1 ]
+}
+
+case "${1:-status}" in
+    status)
+        echo "Wi-Fi device: $IF   now: $(active || true)   mode: $(iw dev "$IF" info 2>/dev/null | awk '/type/ {print $2}')"
+        echo "country: $(country || true)   hotspot: \"$(conf_get PHONE_AP_SSID)\" password $(conf_get PHONE_AP_PASSWORD)   PHONE_AP=$(conf_get PHONE_AP)"
+        if nmcli -t -f NAME connection show | grep -qx "$CON"; then
+            nmcli -g 802-11-wireless.ssid,802-11-wireless.band,802-11-wireless.channel,wifi-sec.proto,wifi-sec.pmf,ipv4.method,connection.autoconnect-priority connection show "$CON" \
+                | paste -sd' ' | sed 's/^/profile: ssid band channel proto pmf ipv4 priority = /'
+        else
+            echo "profile: missing (carhud update makes it)"
+        fi
+        [ -f "$LOG" ] && { echo; echo "last log lines:"; tail -n 8 "$LOG"; }
+        ;;
+    log)
+        tail -n "${2:-80}" "$LOG" 2>/dev/null || echo "no log yet"
+        ;;
+    home)
+        log "leaving the hotspot"
+        nmcli connection down "$CON" >/dev/null 2>&1
+        nmcli device connect "$IF" >/dev/null 2>&1 &
+        sleep 8; log "now on: $(active || echo 'nothing yet')"
+        ;;
+    hotspot)
+        MIN=${2:-0}
+        if [ "${CARHUD_WIFI_BG:-}" != 1 ]; then
+            echo "Switching to the hotspot in the background. SSH over Wi-Fi drops now."
+            echo "Phones: join \"$(conf_get PHONE_AP_SSID)\" (password $(conf_get PHONE_AP_PASSWORD)), then open http://10.42.0.1/"
+            [ "$MIN" -gt 0 ] 2>/dev/null && echo "Back on home Wi-Fi in $MIN minutes."
+            echo "If it doesn't come up, the Pi returns to home Wi-Fi within a minute; then: carhud wifi log"
+            CARHUD_WIFI_BG=1 setsid "$0" hotspot "$MIN" </dev/null >/dev/null 2>&1 &
+            exit 0
+        fi
+        SINCE=$(date '+%F %T')
+        log "---- starting the hotspot on $IF (was on: $(active || echo nothing), country $(country || echo '?'))"
+        if ! checks; then log "not starting: fix the problem above"; exit 1; fi
+        out=$(fix_profile); [ -n "$out" ] && log "profile: $out"
+        out=$(nmcli --wait 30 connection up "$CON" 2>&1); rc=$?
+        log "nmcli: $out"
+        sleep 3
+        if [ $rc = 0 ] && [ "$(active)" = "$CON" ] && iw dev "$IF" info 2>/dev/null | grep -q 'type AP'; then
+            log "hotspot ON: \"$(conf_get PHONE_AP_SSID)\" on channel $(iw dev "$IF" info | awk '/channel/ {print $2; exit}'), the Pi is http://10.42.0.1/"
+            if [ "$MIN" -gt 0 ] 2>/dev/null; then
+                sleep $((MIN * 60))
+                if [ "$(active)" = "$CON" ]; then log "$MIN minutes up: back to home Wi-Fi"; nmcli connection down "$CON" >/dev/null 2>&1; nmcli device connect "$IF" >/dev/null 2>&1; fi
+            fi
+        else
+            log "hotspot FAILED. What NetworkManager and the Wi-Fi driver said:"
+            journalctl -u NetworkManager -u wpa_supplicant --since "$SINCE" --no-pager -o cat 2>/dev/null \
+                | grep -iE "$CON|$IF|ap mode|supplicant|dnsmasq|fail|error|denied|reason|country|regdom" | tail -n 30 | sed 's/^/    /' >> "$LOG"
+            dmesg 2>/dev/null | grep -i brcmf | tail -n 5 | sed 's/^/    kernel: /' >> "$LOG"
+            nmcli connection down "$CON" >/dev/null 2>&1
+            nmcli device connect "$IF" >/dev/null 2>&1
+            sleep 5; log "back on: $(active || echo 'nothing yet')"
+        fi
+        ;;
+    *)
+        echo "usage: carhud-wifi hotspot [minutes] | home | status | log"; exit 1;;
+esac
