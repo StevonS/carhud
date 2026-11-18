@@ -53,6 +53,9 @@ const HELP = `carhud: control the car HUD
   carhud lcd setup <model> [rot]   turn it on (asks for sudo; then reboot), rot 0|90|180|270
   carhud lcd test|calibrate|off    colour bars / tap targets to fix the touch / turn it off
   carhud update                 get the newest CarHUD from GitHub and apply it
+  carhud gears learn             learn your gears by driving through them (most accurate)
+  carhud gears [status|reset]   the gear ratios in use / forget the learned ones
+  carhud pedal reset            relearn the pedal's 0% and 100% positions
   carhud gears <final> <tyre> <ratio1> <ratio2> ...
                                 work out OBD_GEAR_RATIOS, e.g.
                                 carhud gears 4.111 245/40R18 3.454 1.947 1.296 0.972 0.780 0.666
@@ -133,6 +136,12 @@ async function main() {
             const r = await post('/api/setting', { key: args[0], value: v });
             if (r.error) throw new Error(r.error);
             console.log(args[0] + ' = ' + JSON.stringify(v));
+            return;
+        }
+        case 'pedal': {
+            if (args[0] !== 'reset') throw new Error('carhud pedal reset   (forget the pedal\'s rest and flat-out positions; it learns them again)');
+            await post('/api/obd/gears', { action: 'pedal-reset' });
+            console.log('pedal positions forgotten: leave your foot off, then press it to the floor once (parked is fine)');
             return;
         }
         case 'odb': // easy to mistype
@@ -300,7 +309,31 @@ async function main() {
             return;
         }
         case 'gears': {
-            if (args.length < 3) throw new Error('carhud gears <final drive> <tyre e.g. 245/40R18> <gear ratios...>');
+            if (!args.length || ['learn', 'save', 'stop', 'reset', 'status'].includes(args[0])) {
+                const sub = args[0] || 'status';
+                const show = (l) => {
+                    if (l.error) { console.log('error: ' + l.error); return; }
+                    if (!l.learning) { console.log('gears (' + l.from + '): ' + l.ratios.map((r, i) => (i + 1) + ': ' + r).join('  ') + '  rpm per km/h'); return; }
+                    process.stdout.write('\x1b[2K\r[learning ' + l.seconds + 's, ' + l.samples + ' steady readings] found ' + l.gears.length + ' gear(s): ' +
+                        (l.gears.map((g, i) => (i + 1) + ': ' + g.ratio).join('  ') || '-'));
+                };
+                if (sub === 'status') return show(await get('/api/obd/gears'));
+                if (sub !== 'learn') { const l = await post('/api/obd/gears', { action: sub }); show(l); if (sub === 'save' && !l.error) console.log('saved: the HUD uses these now'); return; }
+                await post('/api/obd/gears', { action: 'learn' });
+                console.log('Learning the gears. Drive in each gear, one after another, holding it steady for 5-10 s');
+                console.log('above 15 km/h (any rpm over ~1000; no clutch). 1st and reverse can be skipped by the gaps.');
+                console.log('Press Enter to save, or Ctrl+C to stop without saving.\n');
+                const t = setInterval(async () => { try { show(await get('/api/obd/gears')); } catch (e) { /* server busy */ } }, 1000);
+                process.on('SIGINT', async () => { clearInterval(t); await post('/api/obd/gears', { action: 'stop' }).catch(() => {}); console.log('\nstopped, nothing saved'); process.exit(0); });
+                await new Promise((r) => process.stdin.once('data', r));
+                clearInterval(t);
+                const l = await post('/api/obd/gears', { action: 'save' });
+                console.log();
+                if (l.error) { console.log('not saved: ' + l.error + ' (run carhud gears learn again)'); process.exit(1); }
+                console.log('saved ' + l.ratios.length + ' gears: ' + l.ratios.map((r, i) => (i + 1) + ': ' + r).join('  ') + ' rpm per km/h');
+                process.exit(0);
+            }
+            if (args.length < 3) throw new Error('carhud gears learn | status | reset, or carhud gears <final drive> <tyre e.g. 245/40R18> <gear ratios...>');
             const fd = Number(args[0]);
             const m = String(args[1]).match(/^(\d{3})\/(\d{2})\D*R?(\d{2})$/i);
             if (!m) throw new Error('tyre size like 245/40R18');

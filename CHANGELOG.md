@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.0
+- Gears: `carhud gears learn` learns your car's gears by driving through them (each held steady for a few
+  seconds), so tyre wear and speedometer error don't matter. Saved in ~/.carhud/gears.json and used
+  before OBD_GEAR_RATIOS. `carhud gears` / `carhud gears reset`.
+- Gear detection: smoothed over the last 0.7 s, allowance for whole-km/h speed at low speed, a gear only
+  when the reading is nearer it than halfway to the next, slower changes while not steady (shifting).
+- Pedal: 0% at rest and 100% flat out. The sensors read ~15% at rest; CarHUD learns both ends
+  (~/.carhud/pedal.json). `carhud pedal reset`.
+- `carhud odb` works as `carhud obd`.
+
 ## 2.5.0
 - Hotspot: now runs on hostapd. Phones could join the open test hotspot but were refused by the
   passworded one: NetworkManager's hotspot always offers WPA-PSK-SHA256 next to WPA2, which the Pi's

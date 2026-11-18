@@ -131,11 +131,12 @@ carhud update
 
 1. Plug a **USB ELM327** cable (FTDI- or CH340-based cables are the reliable ones) into the Pi and the car's OBD port, and turn the ignition on.
 2. With `HUD_SOURCE=auto` (the default), the HUD switches to the car by itself. The OBD panel or `carhud obd` shows what the car answers.
-3. **Set your gear ratios** so the HUD shows the right gear. OBD-II doesn't report gear, so CarHUD works it out from rpm ÷ speed:
+3. **Teach it your gears** so the HUD shows the right one. OBD-II doesn't report gear, so CarHUD works it out from rpm ÷ speed. The most accurate way is to let it learn them (a passenger runs this, or start it before you set off):
    ```
-   carhud gears <final drive> <tyre size> <gear ratios...>
+   carhud gears learn
    ```
-   Put the `OBD_GEAR_RATIOS=` line it prints into `/etc/carhud.conf`, then `sudo systemctl restart carhud`. Check it while driving: `carhud obd` shows rpm per km/h live.
+   Drive through the gears, holding each one steady for 5–10 seconds above 15 km/h, then press Enter. It finds each gear from your car's real numbers (tyre wear and speedometer error included) and uses them straight away. `carhud gears` shows what's in use, `carhud gears reset` forgets them. Without driving, `carhud gears <final drive> <tyre size> <gear ratios...>` works them out from the spec sheet (less exact) for `OBD_GEAR_RATIOS=` in `/etc/carhud.conf`.
+4. **The pedal** reads 0–100%: CarHUD learns where the pedal sensor sits at rest (often ~15%) and flat out. Press the pedal to the floor once, parked is fine; until then part throttle reads a little high. `carhud pedal reset` relearns it.
 
 What it reads (when the car supports it): rpm, speed, coolant, oil temperature, manifold pressure (gives boost), barometric pressure, throttle/pedal, load, timing, intake air, MAF, fuel rail pressure, wideband lambda (gives AFR), fuel level, fuel rate, battery voltage and torque. It works out gear, boost, longitudinal G (from speed changes), AFR and fuel use from those. Knock isn't part of standard OBD-II.
 

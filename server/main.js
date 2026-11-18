@@ -342,6 +342,19 @@ const routes = {
     'GET /api/state': (req, res) => json(res, 200, stateMsg()),
     'GET /api/values': (req, res) => json(res, 200, { source: state.source, hud: eva.values, obd: obd.values, derived: obdHud, ratio: derive.ratio }),
     'GET /api/obd': (req, res) => json(res, 200, obd.snapshot()),
+    /* learning the gear ratios by driving (carhud gears learn) */
+    'GET /api/obd/gears': (req, res) => json(res, 200, derive.learning()),
+    'POST /api/obd/gears': async (req, res) => {
+        const b = await body(req);
+        try {
+            if (b.action === 'learn') { log('info', 'gears: learning started'); return json(res, 200, derive.learn(true)); }
+            if (b.action === 'stop') return json(res, 200, derive.learn(false));
+            if (b.action === 'save') { const r = derive.saveLearned(); log('info', 'gears: learned ' + r.join(', ') + ' rpm per km/h'); broadcast(stateMsg()); return json(res, 200, derive.learning()); }
+            if (b.action === 'pedal-reset') { derive.resetPedal(); log('info', 'pedal: rest and flat-out positions forgotten'); return json(res, 200, {}); }
+            if (b.action === 'reset') { derive.forgetLearned(); log('info', 'gears: learned ratios forgotten (' + derive.ratiosFrom + ' now)'); broadcast(stateMsg()); return json(res, 200, derive.learning()); }
+        } catch (e) { return json(res, 400, { error: e.message }); }
+        json(res, 400, { error: 'action: learn | stop | save | reset' });
+    },
     'GET /api/settings': (req, res) => json(res, 200, eva.settings || {}),
     'GET /api/logs': (req, res) => json(res, 200, logs),
     'GET /api/desk/apps': (req, res) => json(res, 200, { apps: deskApps(), home: cfg.DESK_HOME }),
