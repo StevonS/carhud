@@ -32,7 +32,7 @@ echo "CarHUD $VERSION: $MODE for user '$USER_NAME' from $DIR ($(date))"
 
 # ---------------------------------------------------------------------------------------------
 step "1/10  System packages"
-PKGS="xserver-xorg xinit x11-xserver-utils xinput lightdm lightdm-gtk-greeter openbox obconf tint2 pcmanfm lxterminal mousepad
+PKGS="xserver-xorg xinit x11-xserver-utils xinput lightdm lightdm-gtk-greeter openbox obconf tint2 pcmanfm lxterminal mousepad hostapd
 unclutter git curl ca-certificates nodejs python3 python3-pil fonts-dejavu-core fonts-noto-color-emoji openssh-server alsa-utils
 bluez python3-dbus python3-gi openssl avahi-daemon iw rfkill xterm"
 export DEBIAN_FRONTEND=noninteractive
@@ -264,10 +264,21 @@ if command -v nmcli >/dev/null && systemctl is-active --quiet NetworkManager; th
                 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared ipv4.addresses 10.42.0.1/24 \
                 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk "$AP_PASS" connection.autoconnect-priority "$PRIO" $AP_FIX >/dev/null
         fi
-        echo "hotspot \"$AP_SSID\" ready (PHONE_AP=$AP_MODE)${ACTIVE_AP:+, on now}"
+        # the hotspot itself runs on hostapd (carhud-wifi): NetworkManager's profile stays as the fallback only
+        AP_BACKEND=$(conf_get PHONE_AP_BACKEND); AP_BACKEND=${AP_BACKEND:-hostapd}
+        if [ "$AP_BACKEND" = hostapd ] && command -v hostapd >/dev/null; then
+            nmcli connection modify carhud-ap connection.autoconnect no >/dev/null 2>&1
+            systemctl mask hostapd >/dev/null 2>&1 || true      # Debian's own hostapd service; carhud-wifi runs its own
+        else
+            nmcli connection modify carhud-ap connection.autoconnect yes >/dev/null 2>&1
+        fi
+        install -m 644 "$DIR/system/carhud-wifi-auto.service" /etc/systemd/system/carhud-wifi-auto.service
+        systemctl daemon-reload; systemctl enable carhud-wifi-auto >/dev/null 2>&1 || true
+        echo "hotspot \"$AP_SSID\" ready (PHONE_AP=$AP_MODE, runs on $AP_BACKEND)${ACTIVE_AP:+, on now}"
         if iw reg get 2>/dev/null | awk '/^country/ {print $2; exit}' | grep -q '^00'; then echo "WARNING: no Wi-Fi country set (sudo raspi-config → Localisation Options → WLAN Country): the hotspot can't start"; fi
     else
         [ -z "$ACTIVE_AP" ] && nmcli connection delete carhud-ap >/dev/null 2>&1 || true
+        systemctl disable carhud-wifi-auto >/dev/null 2>&1 || true
         echo "hotspot off (PHONE_AP=$AP_MODE)"
     fi
 else

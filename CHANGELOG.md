@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0
+- Hotspot: now runs on hostapd. Phones could join the open test hotspot but were refused by the
+  passworded one: NetworkManager's hotspot always offers WPA-PSK-SHA256 next to WPA2, which the Pi's
+  Wi-Fi chip mishandles with PMF off. hostapd offers plain WPA2-Personal with AES only.
+- `carhud wifi log` now shows each phone's attempt from hostapd itself: joining, refused for a wrong or
+  old saved password, joined, got an address. `carhud wifi` lists the phones on the hotspot.
+- PHONE_AP=auto/on at boot is handled by carhud-wifi-auto.service (the hotspot starts when no known Wi-Fi
+  has connected within a minute). PHONE_AP_BACKEND=nm brings back NetworkManager's hotspot.
+
 ## 2.4.1
 - LCD: the server remembers where the LCD's area is, so touch calibration still applies after a
   `systemctl restart carhud` without re-doing the screen layout.

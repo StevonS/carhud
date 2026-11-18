@@ -316,6 +316,8 @@ function systemInfo(cb) {
             const w = String(out2).split('\n').map((l) => l.split(':')).find((f) => /wireless/.test(f[1] || ''));
             info.wifi = w ? { connection: w[0], hotspot: w[0] === 'carhud-ap' } : { connection: null, hotspot: false };
         }
+        // the hostapd hotspot (carhud-wifi) isn't a NetworkManager connection: it leaves its name here
+        try { const ap = fs.readFileSync('/run/carhud/hotspot', 'utf8').trim(); if (ap) info.wifi = { connection: ap, hotspot: true }; } catch (e) { /* off */ }
         sysDone();
     });
     let pending = 2;

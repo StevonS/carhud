@@ -1,0 +1,11 @@
+[Unit]
+Description=CarHUD: start the car hotspot at boot (PHONE_AP=on, or auto with no known Wi-Fi)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/carhud-wifi auto
+
+[Install]
+WantedBy=multi-user.target

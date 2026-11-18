@@ -6,6 +6,12 @@
 #   carhud-wifi home                       back to the Wi-Fi network the Pi was on before
 #   carhud-wifi status                     what the Wi-Fi is doing, the hotspot's real settings and password
 #   carhud-wifi log                        what happened, including each phone's attempt to join
+#   carhud-wifi auto                       at boot: the hotspot if PHONE_AP=on, or =auto and no known Wi-Fi
+#
+# The hotspot runs on hostapd (PHONE_AP_BACKEND=hostapd, the default). NetworkManager's own hotspot
+# (PHONE_AP_BACKEND=nm) always offers WPA-PSK-SHA256 next to plain WPA2, which the Pi's Wi-Fi chip mishandles
+# with PMF off: open hotspots work, passworded ones refuse phones. hostapd offers plain WPA2-PSK/AES only,
+# and reports every phone's join (and why one is refused) in the log.
 #
 # Switching drops SSH over Wi-Fi, so the work runs as systemd jobs (carhud-wifi-switch, and the
 # carhud-wifi-return timer for the way back): they keep going whatever happens to your session.
@@ -31,6 +37,12 @@ SSID=$(conf_get PHONE_AP_SSID); SSID=${SSID:-CarHUD}
 PASS=$(conf_get PHONE_AP_PASSWORD)
 CH=$(conf_get PHONE_AP_CHANNEL); CH=${CH:-6}
 mkdir -p "$STATE"
+RUN=/run/carhud; mkdir -p "$RUN"
+BACKEND=$(conf_get PHONE_AP_BACKEND); BACKEND=${BACKEND:-hostapd}
+HOSTAPD=$(command -v hostapd || echo /usr/sbin/hostapd)
+if [ "$BACKEND" = hostapd ] && [ ! -x "$HOSTAPD" ]; then BACKEND=nm; NO_HOSTAPD=1; else NO_HOSTAPD=0; fi
+DNSMASQ=$(command -v dnsmasq || echo /usr/sbin/dnsmasq)
+ap_on() { [ -f "$RUN/hotspot" ]; }   # the hostapd hotspot is running (its SSID is in the file)
 
 # What the Pi's Wi-Fi chip needs for a hotspot: WPA2 (RSN) with CCMP only, no protected management frames,
 # a fixed 2.4 GHz channel, no power saving. Name and password come from /etc/carhud.conf every time,
@@ -52,7 +64,8 @@ checks() {
     local ok=1 c
     [ -n "$PASS" ] || [ "${1:-}" = open ] || { log "PROBLEM: no PHONE_AP_PASSWORD in $CONF (carhud update makes one)"; ok=0; }
     [ ${#PASS} -ge 8 ] || [ "${1:-}" = open ] || { log "PROBLEM: the hotspot password must be at least 8 characters"; ok=0; }
-    has_con "$CON" || [ "${1:-}" = open ] || { log "PROBLEM: no hotspot profile '$CON' (run: carhud update, and check PHONE_AP isn't off)"; ok=0; }
+    [ "$NO_HOSTAPD" = 1 ] && log "note: hostapd isn't installed (carhud update installs it), using NetworkManager's hotspot, which phones may refuse"
+    [ "$BACKEND" = hostapd ] || has_con "$CON" || [ "${1:-}" = open ] || { log "PROBLEM: no hotspot profile '$CON' (run: carhud update, and check PHONE_AP isn't off)"; ok=0; }
     command -v dnsmasq >/dev/null || [ -x /usr/sbin/dnsmasq ] || { log "PROBLEM: dnsmasq is missing; the hotspot needs it to hand out addresses (sudo apt install dnsmasq-base)"; ok=0; }
     c=$(country)
     if [ -z "$c" ] || [ "$c" = 00 ]; then log "PROBLEM: no Wi-Fi country set (sudo raspi-config → Localisation Options → WLAN Country)"; ok=0; fi
@@ -60,8 +73,58 @@ checks() {
     [ $ok = 1 ]
 }
 
+# ---- the hostapd hotspot: NetworkManager lets go of the Wi-Fi, hostapd runs it, dnsmasq hands out addresses
+hostapd_start() {   # MODE (open or empty) -> 0 when the hotspot is up
+    local mode=$1 ssid=$SSID c i
+    [ "$mode" = open ] && ssid="$SSID-test"
+    c=$(country)
+    nmcli device set "$IF" managed no 2>&1 | sed 's/^/nmcli: /' >> "$LOG"
+    sleep 2
+    rfkill unblock wifi 2>/dev/null
+    ip link set "$IF" down; ip addr flush dev "$IF"; ip link set "$IF" up
+    ip addr add 10.42.0.1/24 dev "$IF"
+    {
+        echo "interface=$IF"; echo "driver=nl80211"; echo "ctrl_interface=$RUN/hostapd"
+        echo "ssid=$ssid"; echo "country_code=$c"; echo "ieee80211d=1"
+        echo "hw_mode=g"; echo "channel=$CH"; echo "ieee80211n=1"; echo "wmm_enabled=1"
+        echo "auth_algs=1"; echo "ignore_broadcast_ssid=0"; echo "ap_isolate=0"
+        if [ "$mode" != open ]; then
+            # plain WPA2-Personal with AES, no PMF: what every phone joins
+            echo "wpa=2"; echo "wpa_key_mgmt=WPA-PSK"; echo "rsn_pairwise=CCMP"; echo "ieee80211w=0"
+            echo "wpa_passphrase=$PASS"
+        fi
+    } > "$RUN/hostapd.conf"
+    chmod 600 "$RUN/hostapd.conf"
+    systemctl stop carhud-hostapd carhud-dhcp >/dev/null 2>&1; systemctl reset-failed carhud-hostapd carhud-dhcp >/dev/null 2>&1
+    systemd-run --quiet --collect --unit=carhud-hostapd "$HOSTAPD" -t "$RUN/hostapd.conf"
+    # addresses 10.42.0.10-200; the Pi is the phone's router and DNS like NetworkManager's hotspot was
+    systemd-run --quiet --collect --unit=carhud-dhcp "$DNSMASQ" --keep-in-foreground --conf-file=/dev/null --log-facility=- \
+        --interface="$IF" --bind-interfaces --except-interface=lo --no-resolv --no-hosts --dhcp-authoritative \
+        --dhcp-range=10.42.0.10,10.42.0.200,255.255.255.0,12h --dhcp-option=option:router,10.42.0.1 \
+        --dhcp-option=option:dns-server,10.42.0.1 --address=/carhud.local/10.42.0.1 --address="/$(hostname).local/10.42.0.1"
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        journalctl -u carhud-hostapd --since "-20 s" -o cat --no-pager 2>/dev/null | grep -q 'AP-ENABLED' && break
+        systemctl is-active --quiet carhud-hostapd || break
+    done
+    if systemctl is-active --quiet carhud-hostapd && iw dev "$IF" info 2>/dev/null | grep -q 'type AP'; then
+        echo "$ssid" > "$RUN/hotspot"
+        systemctl is-active --quiet carhud-dhcp || log "PROBLEM: dnsmasq didn't start: phones join but get no address ($(journalctl -u carhud-dhcp -n 3 -o cat --no-pager | tr '\n' ' '))"
+        return 0
+    fi
+    return 1
+}
+hostapd_stop() {
+    systemctl stop carhud-hostapd carhud-dhcp >/dev/null 2>&1
+    rm -f "$RUN/hotspot"
+    ip addr flush dev "$IF" 2>/dev/null
+    nmcli device set "$IF" managed yes >/dev/null 2>&1
+    sleep 2
+}
+
 go_home() {
     local home; home=$(cat "$STATE/wifi-home" 2>/dev/null)
+    hostapd_stop
     nmcli connection down "$TEST" >/dev/null 2>&1; nmcli connection delete "$TEST" >/dev/null 2>&1
     nmcli connection down "$CON" >/dev/null 2>&1
     if [ -n "$home" ] && has_con "$home" && nmcli --wait 30 connection up "$home" >/dev/null 2>&1; then :
@@ -72,14 +135,17 @@ go_home() {
 
 # phones joining the hotspot: the Wi-Fi side (accepted, wrong password...) and the address they get
 watch_joins() {
-    local mins=$1
-    timeout "$((mins * 60))" journalctl -f -n 0 -o cat --no-pager 2>/dev/null \
-        | grep --line-buffered -iE "AP-STA-|4-Way|pre-shared key|WPA: |EAPOL|handshake|DHCPACK|DHCPDISCOVER|deauthenticated|disassociated|auth.*(fail|reject)" \
+    local mins=$1 src=()
+    [ "$BACKEND" = hostapd ] && src=(-u carhud-hostapd -u carhud-dhcp)
+    timeout "$((mins * 60))" journalctl -f -n 0 -o cat --no-pager "${src[@]}" 2>/dev/null \
+        | grep --line-buffered -iE "AP-STA-|4-Way|pre-shared key|WPA: |EAPOL|handshake|IEEE 802.11: (associated|authenticated)|DHCPACK|DHCPDISCOVER|deauthenticated|disassociated|auth.*(fail|reject)|invalid MIC" \
         | while IFS= read -r line; do
             case "$line" in
                 *AP-STA-CONNECTED*) msg="a phone joined ($line)";;
                 *AP-STA-DISCONNECTED*) msg="a phone left ($line)";;
                 *AP-STA-POSSIBLE-PSK-MISMATCH*) msg="a phone was refused: WRONG PASSWORD (or an old saved one: Forget This Network on the phone) ($line)";;
+                *"invalid MIC"*|*"pairwise handshake failed"*) msg="a phone was refused: WRONG PASSWORD, or an old saved one on the phone (Forget This Network) ($line)";;
+                *"IEEE 802.11: associated"*) msg="a phone is joining ($line)";;
                 *"pre-shared key may be incorrect"*|*"4-Way Handshake failed"*) msg="a phone was refused: WRONG PASSWORD or security mismatch ($line)";;
                 *DHCPACK*) msg="a phone got an address ($line)";;
                 *) msg="$line";;
@@ -91,8 +157,12 @@ watch_joins() {
 case "${1:-status}" in
     status)
         echo "Wi-Fi device: $IF   now on: $(active || echo nothing)   mode: $(iw dev "$IF" info 2>/dev/null | awk '/type/ {print $2}')"
-        echo "country: $(country || true)   PHONE_AP=$(conf_get PHONE_AP)   channel $CH"
-        if has_con "$CON"; then
+        echo "country: $(country || true)   PHONE_AP=$(conf_get PHONE_AP)   channel $CH   runs on: $BACKEND"
+        if [ "$BACKEND" = hostapd ]; then
+            if ap_on; then echo "hotspot ON: \"$(cat "$RUN/hotspot")\"   password: $PASS   (hostapd $(systemctl is-active carhud-hostapd), addresses $(systemctl is-active carhud-dhcp))"
+            else echo "hotspot: off   name \"$SSID\"   password: $PASS"; fi
+            echo "security: WPA2-Personal (PSK), AES (CCMP), PMF off"
+        elif has_con "$CON"; then
             real=$(nmcli -s -g 802-11-wireless-security.psk connection show "$CON" 2>/dev/null)
             echo "hotspot: \"$(nmcli -g 802-11-wireless.ssid connection show "$CON")\"   password: $real$( [ "$real" != "$PASS" ] && echo "   (settings file says $PASS: carhud wifi hotspot fixes this)")"
             nmcli -g 802-11-wireless-security.proto,802-11-wireless-security.pairwise,802-11-wireless-security.pmf,802-11-wireless.channel,ipv4.method connection show "$CON" | paste -sd' ' | sed 's/^/security: proto pairwise pmf channel ipv4 = /'
@@ -101,6 +171,7 @@ case "${1:-status}" in
         fi
         systemctl list-timers carhud-wifi-return.timer --no-pager 2>/dev/null | grep -q carhud-wifi-return && echo "back to home Wi-Fi: $(systemctl show carhud-wifi-return.timer -p NextElapseUSecRealtime --value)"
         echo "home network to return to: $(cat "$STATE/wifi-home" 2>/dev/null || echo 'not recorded')"
+        ap_on && { echo; echo "phones on the hotspot:"; iw dev "$IF" station dump 2>/dev/null | awk '/^Station/ {print "  " $2}'; }
         [ -f "$LOG" ] && { echo; echo "last log lines:"; tail -n 10 "$LOG"; }
         ;;
     log)
@@ -116,7 +187,7 @@ case "${1:-status}" in
         [ "$MIN" = open ] && { MIN=0; MODE=open; }
         case "$MIN" in ''|*[!0-9]*) echo "minutes must be a number"; exit 1;; esac
         now=$(active || true)
-        [ -n "$now" ] && [ "$now" != "$CON" ] && [ "$now" != "$TEST" ] && echo "$now" > "$STATE/wifi-home"
+        ap_on || { [ -n "$now" ] && [ "$now" != "$CON" ] && [ "$now" != "$TEST" ] && echo "$now" > "$STATE/wifi-home"; }
         systemctl stop carhud-wifi-return.timer carhud-wifi-switch.service >/dev/null 2>&1
         systemctl reset-failed carhud-wifi-return.timer carhud-wifi-return.service carhud-wifi-switch.service >/dev/null 2>&1
         if [ "$MODE" = open ]; then
@@ -139,6 +210,24 @@ case "${1:-status}" in
         SINCE=$(date '+%F %T')
         log "---- starting the ${MODE:+open test }hotspot on $IF (was on: $(cat "$STATE/wifi-home" 2>/dev/null || echo '?'), country $(country || echo '?'))"
         if ! checks "$MODE"; then log "not starting: fix the problem above"; exit 1; fi
+        if [ "$BACKEND" = hostapd ]; then
+            # NetworkManager's own hotspot profile must not start by itself alongside
+            has_con "$CON" && nmcli connection modify "$CON" connection.autoconnect no >/dev/null 2>&1
+            ap_on && hostapd_stop
+            nmcli connection down "$CON" >/dev/null 2>&1; nmcli connection down "$TEST" >/dev/null 2>&1
+            if hostapd_start "$MODE"; then
+                log "hotspot ON (hostapd): \"$(cat "$RUN/hotspot")\" on channel $CH, $([ "$MODE" = open ] && echo 'no password' || echo "WPA2 password $PASS"), the Pi is http://10.42.0.1/"
+                w=$MIN; { [ "$w" -eq 0 ] || [ "$w" -gt 30 ]; } && w=30
+                watch_joins "$w"
+            else
+                log "hotspot FAILED. What hostapd said:"
+                journalctl -u carhud-hostapd --since "$SINCE" --no-pager -o cat 2>/dev/null | tail -n 25 | sed 's/^/    /' >> "$LOG"
+                dmesg 2>/dev/null | grep -i brcmf | tail -n 5 | sed 's/^/    kernel: /' >> "$LOG"
+                systemctl stop carhud-wifi-return.timer >/dev/null 2>&1
+                go_home
+            fi
+            exit 0
+        fi
         if [ "$MODE" = open ]; then make_test; else out=$(fix_profile); [ -n "$out" ] && log "profile: $out"; fi
         out=$(nmcli --wait 30 connection up "$PROFILE" 2>&1); rc=$?
         log "nmcli: $out"
@@ -157,6 +246,20 @@ case "${1:-status}" in
             go_home
         fi
         ;;
+    auto)
+        # at boot (carhud-wifi-auto.service): PHONE_AP=on starts the hotspot; auto starts it when no known
+        # Wi-Fi network has connected within a minute; off does nothing
+        mode=$(conf_get PHONE_AP); mode=${mode:-auto}
+        [ "$BACKEND" = hostapd ] || exit 0          # NetworkManager's profile does this by itself
+        case "$mode" in
+            on) log "boot: PHONE_AP=on, starting the hotspot"; exec "$SELF" hotspot 0;;
+            auto)
+                for i in $(seq 1 60); do [ -n "$(active)" ] && { log "boot: on $(active), no hotspot needed"; exit 0; }; sleep 1; done
+                log "boot: no known Wi-Fi within a minute (PHONE_AP=auto), starting the hotspot"
+                exec "$SELF" hotspot 0;;
+            *) exit 0;;
+        esac
+        ;;
     *)
-        echo "usage: carhud-wifi hotspot [minutes] [open] | home | status | log"; exit 1;;
+        echo "usage: carhud-wifi hotspot [minutes] [open] | home | status | log | auto"; exit 1;;
 esac
