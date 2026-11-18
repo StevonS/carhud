@@ -135,6 +135,7 @@ async function main() {
             console.log(args[0] + ' = ' + JSON.stringify(v));
             return;
         }
+        case 'odb': // easy to mistype
         case 'obd': {
             const s = await get('/api/obd'); const i = s.info || {};
             console.log('state:    ' + s.state + (s.detail ? ' (' + s.detail + ')' : ''));
